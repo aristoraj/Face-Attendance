@@ -183,7 +183,6 @@ class ZohoCreatorAPI:
         self,
         student_id: str,
         student_name: str,
-        student_number: str = "",
         verification_type: str = "face_blink_verified",
     ) -> dict:
         """
@@ -197,13 +196,11 @@ class ZohoCreatorAPI:
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
 
-        # Use student_number (e.g. "1001") as the lookup display value
-        lookup_value = student_number if student_number else student_name
         payload = {
             "data": {
-                FIELD_ATT_STUDENT: lookup_value,
+                FIELD_ATT_STUDENT: student_id,   # system record ID passed directly as string
                 FIELD_ATT_DATE: now.strftime("%d-%b-%Y"),
-                FIELD_ATT_STATUS: "Present",   # value must match your Attendance dropdown option exactly
+                FIELD_ATT_STATUS: "Present",
             }
         }
 

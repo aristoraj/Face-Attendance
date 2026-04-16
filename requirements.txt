@@ -1,0 +1,23 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Zoho Face Recognition Module — Python Dependencies
+# NOTE: dlib and face-recognition are installed separately in the Dockerfile
+#       before this file to leverage Docker layer caching.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Web framework
+flask==3.0.3
+flask-cors==4.0.1
+
+# HTTP requests (for Zoho API calls)
+requests==2.31.0
+
+# Image processing
+Pillow==10.3.0
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+
+# Environment variable management
+python-dotenv==1.0.1
+
+# WSGI production server
+gunicorn==21.2.0

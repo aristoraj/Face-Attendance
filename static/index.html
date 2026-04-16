@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zoho Attendance — Face Verification</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <!-- Bootstrap Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
+
+  <!-- MediaPipe Face Mesh -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
+
+  <style>
+    /* ── Base ─────────────────────────────────────────────────────────────── */
+    :root {
+      --bg-dark:    #0d1117;
+      --bg-card:    #161b22;
+      --bg-input:   #21262d;
+      --border:     #30363d;
+      --accent:     #2563eb;
+      --accent-h:   #1d4ed8;
+      --success:    #16a34a;
+      --danger:     #dc2626;
+      --warning:    #d97706;
+      --text:       #e6edf3;
+      --text-muted: #8b949e;
+      --radius:     12px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg-dark);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────────── */
+    .app-header {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .app-header .logo {
+      width: 36px; height: 36px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .app-header h1 { font-size: 17px; font-weight: 600; line-height: 1.2; }
+    .app-header p  { font-size: 12px; color: var(--text-muted); }
+
+    /* ── Main Layout ─────────────────────────────────────────────────────── */
+    .main {
+      flex: 1;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 32px 16px;
+      gap: 24px;
+    }
+
+    /* ── Camera Card ─────────────────────────────────────────────────────── */
+    .camera-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      width: 500px;
+      flex-shrink: 0;
+    }
+    .camera-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4/3;
+      background: #000;
+      overflow: hidden;
+    }
+    #video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      transform: scaleX(-1); /* Mirror effect */
+    }
+    #canvas-overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      transform: scaleX(-1);
+      pointer-events: none;
+    }
+
+    /* Face frame overlay */
+    .face-frame {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 220px; height: 270px;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-radius: 50%;
+      pointer-events: none;
+      transition: border-color 0.3s;
+    }
+    .face-frame.detected  { border-color: rgba(37, 99, 235, 0.7); }
+    .face-frame.liveness  { border-color: rgba(217, 119, 6, 0.9); }
+    .face-frame.verified  { border-color: rgba(22, 163, 74, 0.9); }
+    .face-frame.no-match  { border-color: rgba(220, 38, 38, 0.9); }
+
+    /* Corner accents */
+    .face-frame::before,
+    .face-frame::after {
+      content: '';
+      position: absolute;
+      width: 30px; height: 30px;
+      border-color: inherit;
+      border-style: solid;
+    }
+    .face-frame::before {
+      top: -2px; left: -2px;
+      border-width: 3px 0 0 3px;
+      border-radius: 8px 0 0 0;
+    }
+    .face-frame::after {
+      bottom: -2px; right: -2px;
+      border-width: 0 3px 3px 0;
+      border-radius: 0 0 8px 0;
+    }
+
+    /* Status bar at bottom of camera */
+    .camera-status {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      padding: 10px 16px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.85));
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      transition: all 0.3s;
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex-shrink: 0;
+      animation: pulse 1.5s infinite;
+    }
+    .status-dot.active  { background: var(--accent);  }
+    .status-dot.blink   { background: var(--warning); animation: pulse-fast 0.5s infinite; }
+    .status-dot.success { background: var(--success); animation: none; }
+    .status-dot.error   { background: var(--danger);  animation: none; }
+
+    @keyframes pulse      { 0%,100%{opacity:1} 50%{opacity:.4} }
+    @keyframes pulse-fast { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+    /* ── Info Panel ───────────────────────────────────────────────────────── */
+    .info-panel {
+      flex: 1;
+      max-width: 380px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .step-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .step-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 16px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+
+    .step {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+      transition: all 0.3s;
+    }
+    .step:last-child { border-bottom: none; }
+    .step-num {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700;
+      flex-shrink: 0;
+      transition: all 0.3s;
+    }
+    .step.active   .step-num { background: var(--accent);  border-color: var(--accent);  color: #fff; }
+    .step.done     .step-num { background: var(--success); border-color: var(--success); color: #fff; }
+    .step.active   .step-label { color: var(--text); }
+    .step.done     .step-label { color: var(--text-muted); text-decoration: line-through; }
+    .step-label { font-size: 13px; color: var(--text-muted); line-height: 1.4; }
+    .step-label strong { color: var(--text); }
+
+    /* EAR meter */
+    .ear-meter-wrap { margin-top: 4px; }
+    .ear-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+    .ear-bar {
+      height: 4px;
+      border-radius: 2px;
+      background: var(--bg-input);
+      overflow: hidden;
+    }
+    .ear-fill {
+      height: 100%;
+      width: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      transition: width 0.1s, background 0.2s;
+    }
+
+    /* Blink counter */
+    .blink-counter {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    .blink-count { font-size: 20px; font-weight: 700; color: var(--warning); line-height: 1; }
+    .blink-count.complete { color: var(--success); }
+
+    /* Result card */
+    .result-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: none;
+    }
+    .result-card.show { display: block; }
+    .result-card.success { border-color: var(--success); }
+    .result-card.danger  { border-color: var(--danger);  }
+
+    .result-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 14px;
+    }
+    .result-badge.success { background: rgba(22,163,74,.15); color: #4ade80; }
+    .result-badge.danger  { background: rgba(220,38,38,.15); color: #f87171; }
+
+    .student-info { display: flex; flex-direction: column; gap: 8px; }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-key   { color: var(--text-muted); }
+    .info-value { font-weight: 500; color: var(--text); }
+    .info-value.att-ok  { color: #4ade80; }
+    .info-value.att-err { color: #f87171; }
+
+    .confidence-bar {
+      height: 6px;
+      background: var(--bg-input);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+    .confidence-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #7c3aed);
+      border-radius: 3px;
+      transition: width 0.6s ease;
+    }
+
+    /* Retry button */
+    .btn-retry {
+      width: 100%;
+      padding: 10px;
+      margin-top: 14px;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-retry:hover { background: var(--border); }
+
+    /* Loading spinner */
+    .spinner {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 20px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .spinner.show { display: flex; }
+    .spin {
+      width: 20px; height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Toast notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 24px; right: 24px;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .toast-msg {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      max-width: 320px;
+      animation: slideIn 0.3s ease;
+    }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Camera permission screen */
+    #perm-screen {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: var(--bg-card);
+      z-index: 10;
+      padding: 24px;
+      text-align: center;
+    }
+    #perm-screen i { font-size: 40px; color: var(--text-muted); }
+    #perm-screen p { font-size: 13px; color: var(--text-muted); max-width: 260px; }
+    #btn-allow {
+      padding: 10px 24px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    #btn-allow:hover { background: var(--accent-h); }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .main { flex-direction: column; align-items: center; }
+      .camera-card { width: 100%; max-width: 500px; }
+      .info-panel { max-width: 500px; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<header class="app-header">
+  <div class="logo"><i class="bi bi-person-badge" style="color:#fff"></i></div>
+  <div>
+    <h1>Student Face Verification</h1>
+    <p>Zoho Creator · Attendance Module</p>
+  </div>
+</header>
+
+<!-- ── Main ───────────────────────────────────────────────────────────────── -->
+<main class="main">
+
+  <!-- Camera Card -->
+  <div class="camera-card">
+    <div class="camera-wrap">
+      <!-- Permission prompt -->
+      <div id="perm-screen">
+        <i class="bi bi-camera-video-off"></i>
+        <p>Camera access is required for face verification. Click below to grant access.</p>
+        <button id="btn-allow" onclick="startCamera()">
+          <i class="bi bi-camera-video me-2"></i>Allow Camera
+        </button>
+      </div>
+
+      <!-- Video + Canvas -->
+      <video id="video" autoplay muted playsinline></video>
+      <canvas id="canvas-overlay"></canvas>
+
+      <!-- Face frame guide -->
+      <div class="face-frame" id="face-frame"></div>
+
+      <!-- Status bar -->
+      <div class="camera-status">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Initialising camera...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Info Panel -->
+  <div class="info-panel">
+
+    <!-- Steps card -->
+    <div class="step-card">
+      <h3><i class="bi bi-list-check me-1"></i> Verification Steps</h3>
+
+      <div class="step" id="step-1">
+        <div class="step-num">1</div>
+        <div>
+          <div class="step-label"><strong>Position your face</strong> within the oval guide</div>
+        </div>
+      </div>
+
+      <div class="step" id="step-2">
+        <div class="step-num">2</div>
+        <div>
+          <div class="step-label"><strong>Blink naturally</strong> — liveness check (blink 2× to confirm)</div>
+          <div class="ear-meter-wrap" id="ear-meter-wrap" style="display:none">
+            <div class="ear-label">Eye openness <span id="ear-val">—</span></div>
+            <div class="ear-bar"><div class="ear-fill" id="ear-fill"></div></div>
+          </div>
+          <div id="blink-counter-wrap" style="display:none">
+            <div class="blink-counter">
+              <i class="bi bi-eye"></i>
+              <span class="blink-count" id="blink-count">0</span>
+              <span>/ 2 blinks detected</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" id="step-3">
+        <div class="step-num">3</div>
+        <div class="step-label"><strong>Hold still</strong> — capturing &amp; verifying identity</div>
+      </div>
+
+      <div class="step" id="step-4">
+        <div class="step-num">4</div>
+        <div class="step-label"><strong>Attendance posted</strong> to Zoho Creator</div>
+      </div>
+    </div>
+
+    <!-- Spinner -->
+    <div class="spinner" id="spinner">
+      <div class="spin"></div>
+      <span>Verifying identity...</span>
+    </div>
+
+    <!-- Result Card -->
+    <div class="result-card" id="result-card">
+      <div class="result-badge" id="result-badge"></div>
+      <div class="student-info" id="student-info"></div>
+      <button class="btn-retry" id="btn-retry" onclick="resetVerification()">
+        <i class="bi bi-arrow-counterclockwise me-1"></i> Verify another student
+      </button>
+    </div>
+
+  </div>
+</main>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- ── Script ──────────────────────────────────────────────────────────────── -->
+<script>
+'use strict';
+
+// ── Config ────────────────────────────────────────────────────────────────────
+const API_BASE         = '';           // Same origin; change to full URL if separate
+const BLINKS_REQUIRED  = 2;           // Number of blinks needed for liveness
+const EAR_CLOSE_THRESH = 0.18;        // EAR below this = eye closed
+const EAR_OPEN_THRESH  = 0.23;        // EAR above this after close = blink complete
+const EAR_SMOOTH_ALPHA = 0.3;         // EMA smoothing factor
+
+// MediaPipe Face Mesh landmarks for EAR calculation
+// Format: [p1_left, p2_top1, p3_top2, p4_right, p5_bot1, p6_bot2]
+const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
+const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let state = {
+  cameraReady:   false,
+  faceDetected:  false,
+  blinkCount:    0,
+  eyeWasClosed:  false,
+  smoothedEAR:   0.3,
+  blinkVerified: false,
+  verifying:     false,
+  done:          false,
+};
+
+let videoEl, canvasEl, ctx, faceMeshInstance, cameraInstance;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const permScreen   = document.getElementById('perm-screen');
+const statusDot    = document.getElementById('status-dot');
+const statusText   = document.getElementById('status-text');
+const faceFrame    = document.getElementById('face-frame');
+const earVal       = document.getElementById('ear-val');
+const earFill      = document.getElementById('ear-fill');
+const earWrap      = document.getElementById('ear-meter-wrap');
+const blinkWrap    = document.getElementById('blink-counter-wrap');
+const blinkCountEl = document.getElementById('blink-count');
+const spinnerEl    = document.getElementById('spinner');
+const resultCard   = document.getElementById('result-card');
+const resultBadge  = document.getElementById('result-badge');
+const studentInfo  = document.getElementById('student-info');
+
+// ── Camera Initialisation ─────────────────────────────────────────────────────
+async function startCamera() {
+  permScreen.style.display = 'none';
+  setStatus('dot', 'Requesting camera access...');
+
+  videoEl  = document.getElementById('video');
+  canvasEl = document.getElementById('canvas-overlay');
+  ctx      = canvasEl.getContext('2d');
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+      audio: false,
+    });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+    state.cameraReady = true;
+    setStatus('active', 'Camera ready — initialising face detection...');
+    initFaceMesh();
+  } catch (err) {
+    permScreen.style.display = 'flex';
+    setStatus('error', `Camera error: ${err.message}`);
+    toast(`Camera access denied: ${err.message}`, 'danger');
+  }
+}
+
+// ── MediaPipe Face Mesh ───────────────────────────────────────────────────────
+function initFaceMesh() {
+  faceMeshInstance = new FaceMesh({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${file}`,
+  });
+
+  faceMeshInstance.setOptions({
+    maxNumFaces:          1,
+    refineLandmarks:      true,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence:  0.6,
+  });
+
+  faceMeshInstance.onResults(onFaceMeshResults);
+
+  cameraInstance = new Camera(videoEl, {
+    onFrame: async () => {
+      if (!state.done && !state.verifying) {
+        await faceMeshInstance.send({ image: videoEl });
+      }
+    },
+    width:  640,
+    height: 480,
+  });
+
+  cameraInstance.start().then(() => {
+    setStatus('active', 'Position your face in the oval');
+    activateStep(1);
+  });
+}
+
+// ── Face Mesh Results Handler ─────────────────────────────────────────────────
+function onFaceMeshResults(results) {
+  // Sync canvas size to video
+  canvasEl.width  = videoEl.videoWidth  || 640;
+  canvasEl.height = videoEl.videoHeight || 480;
+  ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+
+  const landmarks = results.multiFaceLandmarks && results.multiFaceLandmarks[0];
+
+  if (!landmarks) {
+    // No face
+    if (state.faceDetected) {
+      state.faceDetected = false;
+      setStatus('dot', 'Position your face in the oval');
+      setFrameClass('');
+      earWrap.style.display  = 'none';
+      blinkWrap.style.display = 'none';
+    }
+    return;
+  }
+
+  // Face detected
+  if (!state.faceDetected) {
+    state.faceDetected = true;
+    setStatus('active', 'Face detected — blink to verify liveness');
+    setFrameClass('detected');
+    activateStep(2);
+    earWrap.style.display  = 'block';
+    blinkWrap.style.display = 'block';
+  }
+
+  // Draw subtle mesh (optional — performance-friendly subset)
+  drawSubtleMesh(landmarks, canvasEl.width, canvasEl.height);
+
+  // ── EAR calculation ─────────────────────────────────────────────────────────
+  const w = canvasEl.width;
+  const h = canvasEl.height;
+  const lEAR = computeEAR(landmarks, LEFT_EYE_IDX, w, h);
+  const rEAR = computeEAR(landmarks, RIGHT_EYE_IDX, w, h);
+  const avgEAR = (lEAR + rEAR) / 2;
+
+  // Exponential moving average for smooth readings
+  state.smoothedEAR = EAR_SMOOTH_ALPHA * avgEAR + (1 - EAR_SMOOTH_ALPHA) * state.smoothedEAR;
+
+  // Update UI meter
+  const earPct = Math.min(Math.max(state.smoothedEAR / 0.35, 0), 1) * 100;
+  earVal.textContent = state.smoothedEAR.toFixed(3);
+  earFill.style.width = earPct + '%';
+  earFill.style.background = state.smoothedEAR < EAR_CLOSE_THRESH
+    ? 'var(--warning)' : 'var(--accent)';
+
+  // ── Blink state machine ──────────────────────────────────────────────────────
+  if (!state.blinkVerified) {
+    if (state.smoothedEAR < EAR_CLOSE_THRESH) {
+      // Eyes closing
+      state.eyeWasClosed = true;
+      setFrameClass('liveness');
+      setStatus('blink', 'Blink detected — keep going...');
+    } else if (state.smoothedEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
+      // Eyes re-opened = one blink complete
+      state.eyeWasClosed = false;
+      state.blinkCount++;
+      blinkCountEl.textContent = state.blinkCount;
+
+      if (state.blinkCount >= BLINKS_REQUIRED) {
+        state.blinkVerified = true;
+        blinkCountEl.classList.add('complete');
+        setStatus('success', 'Liveness confirmed — capturing...');
+        setFrameClass('verified');
+        activateStep(3);
+        captureAndVerify();
+      } else {
+        const remaining = BLINKS_REQUIRED - state.blinkCount;
+        setStatus('blink', `Good! Blink ${remaining} more time${remaining > 1 ? 's' : ''}...`);
+      }
+    }
+  }
+}
+
+// ── Compute Eye Aspect Ratio ──────────────────────────────────────────────────
+function computeEAR(landmarks, indices, w, h) {
+  const pt = (i) => ({
+    x: landmarks[i].x * w,
+    y: landmarks[i].y * h,
+  });
+
+  const [p1, p2, p3, p4, p5, p6] = indices.map(pt);
+
+  const v1 = dist(p2, p6);
+  const v2 = dist(p3, p5);
+  const ho = dist(p1, p4);
+
+  return (v1 + v2) / (2.0 * ho);
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+// ── Draw subtle mesh (eye + face contours only) ───────────────────────────────
+function drawSubtleMesh(landmarks, w, h) {
+  const eyeColor = 'rgba(37, 99, 235, 0.4)';
+  const contourColor = 'rgba(255,255,255,0.08)';
+
+  // Face oval
+  const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
+  drawPath(landmarks, FACE_OVAL, w, h, contourColor, 1, true);
+
+  // Left eye
+  const L_EYE = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
+  drawPath(landmarks, L_EYE, w, h, eyeColor, 1.5, true);
+
+  // Right eye
+  const R_EYE = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
+  drawPath(landmarks, R_EYE, w, h, eyeColor, 1.5, true);
+}
+
+function drawPath(landmarks, indices, w, h, color, lineWidth, close) {
+  if (!indices.length) return;
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  const first = landmarks[indices[0]];
+  ctx.moveTo(first.x * w, first.y * h);
+  for (let i = 1; i < indices.length; i++) {
+    const lm = landmarks[indices[i]];
+    ctx.lineTo(lm.x * w, lm.y * h);
+  }
+  if (close) ctx.closePath();
+  ctx.stroke();
+}
+
+// ── Capture & Verify ──────────────────────────────────────────────────────────
+async function captureAndVerify() {
+  state.verifying = true;
+
+  // Capture current video frame as base64 JPEG
+  const captureCanvas = document.createElement('canvas');
+  captureCanvas.width  = videoEl.videoWidth;
+  captureCanvas.height = videoEl.videoHeight;
+  const cCtx = captureCanvas.getContext('2d');
+  // Draw mirrored frame (flip back for correct face orientation for recognition)
+  cCtx.translate(captureCanvas.width, 0);
+  cCtx.scale(-1, 1);
+  cCtx.drawImage(videoEl, 0, 0);
+  const imageData = captureCanvas.toDataURL('image/jpeg', 0.92);
+
+  // Show spinner, hide result
+  spinnerEl.classList.add('show');
+  resultCard.classList.remove('show', 'success', 'danger');
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: imageData, blink_verified: true }),
+    });
+
+    const data = await resp.json();
+    spinnerEl.classList.remove('show');
+
+    if (!resp.ok) {
+      showError(data.error || 'Verification failed.');
+      resetForRetry();
+      return;
+    }
+
+    if (data.matched) {
+      showSuccess(data);
+      activateStep(4);
+    } else {
+      showNoMatch(data.message);
+      resetForRetry();
+    }
+
+  } catch (err) {
+    spinnerEl.classList.remove('show');
+    showError(`Network error: ${err.message}`);
+    resetForRetry();
+  }
+}
+
+// ── Result Display ────────────────────────────────────────────────────────────
+function showSuccess(data) {
+  state.done = true;
+  const s = data.student;
+
+  resultBadge.className = 'result-badge success';
+  resultBadge.innerHTML = `<i class="bi bi-check-circle-fill"></i> Identity Verified`;
+
+  const confPct = data.confidence || 0;
+  const attStatus = data.attendance_posted
+    ? `<span class="info-value att-ok"><i class="bi bi-check-circle me-1"></i>Marked Present</span>`
+    : `<span class="info-value att-err"><i class="bi bi-exclamation-triangle me-1"></i>Failed to post</span>`;
+
+  studentInfo.innerHTML = `
+    <div class="info-row"><span class="info-key">Name</span><span class="info-value">${esc(s.name)}</span></div>
+    ${s.roll_number ? `<div class="info-row"><span class="info-key">Roll No.</span><span class="info-value">${esc(s.roll_number)}</span></div>` : ''}
+    ${s.class ? `<div class="info-row"><span class="info-key">Class</span><span class="info-value">${esc(s.class)}</span></div>` : ''}
+    <div class="info-row"><span class="info-key">Confidence</span><span class="info-value">${confPct}%</span></div>
+    <div class="confidence-bar"><div class="confidence-fill" style="width:${confPct}%"></div></div>
+    <div class="info-row"><span class="info-key">Attendance</span>${attStatus}</div>
+    <div class="info-row"><span class="info-key">Verified via</span><span class="info-value">Face + Eye Blink</span></div>
+  `;
+
+  resultCard.classList.add('show', 'success');
+  setFrameClass('verified');
+  setStatus('success', `Welcome, ${s.name}! Attendance marked.`);
+  toast(`✓ ${s.name} — attendance posted`, 'success');
+}
+
+function showNoMatch(message) {
+  resultBadge.className = 'result-badge danger';
+  resultBadge.innerHTML = `<i class="bi bi-x-circle-fill"></i> Not Recognised`;
+
+  studentInfo.innerHTML = `
+    <div class="info-row">
+      <span class="info-key">Result</span>
+      <span class="info-value" style="color:var(--danger)">${esc(message || 'Face not found in database.')}</span>
+    </div>
+    <div class="info-row"><span class="info-key">Action</span><span class="info-value">Please try again or contact admin.</span></div>
+  `;
+
+  resultCard.classList.add('show', 'danger');
+  setFrameClass('no-match');
+  setStatus('error', 'Face not recognised');
+}
+
+function showError(msg) {
+  toast(msg, 'danger');
+  setStatus('error', msg);
+  setFrameClass('no-match');
+}
+
+// ── Reset ─────────────────────────────────────────────────────────────────────
+function resetForRetry() {
+  setTimeout(() => {
+    state.verifying = false;
+    state.blinkVerified = false;
+    state.blinkCount = 0;
+    state.eyeWasClosed = false;
+    state.smoothedEAR = 0.3;
+    blinkCountEl.textContent = '0';
+    blinkCountEl.classList.remove('complete');
+    setStatus('active', 'Position your face in the oval');
+    setFrameClass('');
+    activateStep(1);
+  }, 3000);
+}
+
+function resetVerification() {
+  state.done = false;
+  resultCard.classList.remove('show', 'success', 'danger');
+  resetForRetry();
+}
+
+// ── UI Helpers ────────────────────────────────────────────────────────────────
+function setStatus(type, text) {
+  statusText.textContent = text;
+  statusDot.className = 'status-dot';
+  if (type === 'active')   statusDot.classList.add('active');
+  if (type === 'blink')    statusDot.classList.add('blink');
+  if (type === 'success')  statusDot.classList.add('success');
+  if (type === 'error')    statusDot.classList.add('error');
+}
+
+function setFrameClass(cls) {
+  faceFrame.className = 'face-frame' + (cls ? ` ${cls}` : '');
+}
+
+function activateStep(n) {
+  for (let i = 1; i <= 4; i++) {
+    const el = document.getElementById(`step-${i}`);
+    el.classList.remove('active', 'done');
+    if (i < n)  el.classList.add('done');
+    if (i === n) el.classList.add('active');
+  }
+}
+
+function esc(str) {
+  const d = document.createElement('div');
+  d.appendChild(document.createTextNode(str || ''));
+  return d.innerHTML;
+}
+
+function toast(msg, type = 'info') {
+  const colors = { success: 'var(--success)', danger: 'var(--danger)', info: 'var(--accent)' };
+  const el = document.createElement('div');
+  el.className = 'toast-msg';
+  el.style.borderLeftColor = colors[type] || colors.info;
+  el.style.borderLeft = `3px solid ${colors[type] || colors.info}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 5000);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+// Auto-start if browser supports getUserMedia
+(async function init() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    permScreen.querySelector('p').textContent = 'Your browser does not support camera access. Please use Chrome or Edge.';
+    return;
+  }
+
+  // Check if already have permission
+  try {
+    const perm = await navigator.permissions.query({ name: 'camera' });
+    if (perm.state === 'granted') {
+      startCamera();
+    }
+    // else: wait for user to click Allow button
+  } catch (_) {
+    // permissions API not supported — wait for button click
+  }
+})();
+</script>
+</body>
+</html>

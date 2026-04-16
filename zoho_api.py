@@ -1,0 +1,210 @@
+"""
+Zoho Creator API Client.
+Handles OAuth token refresh, fetching student records with photos,
+and posting attendance records.
+"""
+
+import logging
+import requests
+from datetime import datetime
+from config import (
+    ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN,
+    ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_STUDENT_REPORT,
+    ZOHO_ATTENDANCE_FORM, ZOHO_DATA_CENTER,
+    FIELD_STUDENT_ID, FIELD_STUDENT_NAME, FIELD_STUDENT_PHOTO,
+    FIELD_STUDENT_ROLL, FIELD_STUDENT_CLASS,
+    FIELD_ATT_STUDENT_ID, FIELD_ATT_STUDENT_NAME,
+    FIELD_ATT_DATE, FIELD_ATT_TIME, FIELD_ATT_STATUS, FIELD_ATT_VERIFICATION,
+)
+from face_utils import encode_face_from_bytes
+
+logger = logging.getLogger(__name__)
+
+
+class ZohoCreatorAPI:
+    """Client for Zoho Creator REST API v2."""
+
+    BASE_URL_TEMPLATE = "https://creator.zoho.{dc}/api/v2/{owner}/{app}"
+    TOKEN_URL_TEMPLATE = "https://accounts.zoho.{dc}/oauth/v2/token"
+
+    def __init__(self):
+        self._access_token: str | None = None
+        self._base_url = self.BASE_URL_TEMPLATE.format(
+            dc=ZOHO_DATA_CENTER,
+            owner=ZOHO_ACCOUNT_OWNER,
+            app=ZOHO_APP_NAME,
+        )
+        self._token_url = self.TOKEN_URL_TEMPLATE.format(dc=ZOHO_DATA_CENTER)
+
+    # ─── Auth ──────────────────────────────────────────────────────────────────
+
+    def _refresh_token(self) -> str:
+        """Exchange refresh token for a fresh access token."""
+        resp = requests.post(
+            self._token_url,
+            params={
+                "refresh_token": ZOHO_REFRESH_TOKEN,
+                "client_id": ZOHO_CLIENT_ID,
+                "client_secret": ZOHO_CLIENT_SECRET,
+                "grant_type": "refresh_token",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "access_token" not in data:
+            raise RuntimeError(f"Token refresh failed: {data}")
+        self._access_token = data["access_token"]
+        logger.debug("Zoho access token refreshed.")
+        return self._access_token
+
+    def _headers(self) -> dict:
+        token = self._refresh_token()
+        return {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Content-Type": "application/json",
+        }
+
+    # ─── Students ──────────────────────────────────────────────────────────────
+
+    def get_students(self) -> list[dict]:
+        """
+        Fetch all student records from Zoho Creator, encode their photos,
+        and return a list of student dicts with face encodings.
+        """
+        url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
+        students = []
+        page_start = 1
+        page_size = 200
+
+        logger.info("Fetching students from Zoho Creator...")
+
+        while True:
+            resp = requests.get(
+                url,
+                headers=self._headers(),
+                params={"from": page_start, "limit": page_size},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            records = payload.get("data", [])
+
+            if not records:
+                break
+
+            for record in records:
+                student = self._process_record(record)
+                if student:
+                    students.append(student)
+
+            logger.info(f"Fetched {len(records)} records (page start {page_start}); encoded {len(students)} faces so far.")
+
+            if len(records) < page_size:
+                break  # Last page
+            page_start += page_size
+
+        logger.info(f"Total students with valid face encodings: {len(students)}")
+        return students
+
+    def _process_record(self, record: dict) -> dict | None:
+        """Parse a raw Zoho Creator record into a student dict with face encoding."""
+        student_id = (
+            record.get(FIELD_STUDENT_ID)
+            or record.get("ID")
+            or record.get("id")
+        )
+        name = record.get(FIELD_STUDENT_NAME) or record.get("Student_Name") or "Unknown"
+        roll = record.get(FIELD_STUDENT_ROLL, "")
+        cls = record.get(FIELD_STUDENT_CLASS, "")
+
+        # Photo field can be a URL string or a dict with a url key
+        photo = record.get(FIELD_STUDENT_PHOTO)
+        if not photo:
+            logger.debug(f"Skipping student '{name}' — no photo field.")
+            return None
+
+        if isinstance(photo, dict):
+            photo_url = photo.get("url") or photo.get("value") or photo.get("download_url")
+        else:
+            photo_url = str(photo)
+
+        if not photo_url:
+            return None
+
+        try:
+            encoding = self._download_and_encode(photo_url)
+        except Exception as e:
+            logger.warning(f"Skipping student '{name}': {e}")
+            return None
+
+        if encoding is None:
+            logger.debug(f"No face found in photo for '{name}', skipping.")
+            return None
+
+        return {
+            "id": student_id,
+            "name": name,
+            "roll_number": roll,
+            "class": cls,
+            "encoding": encoding,
+        }
+
+    def _download_and_encode(self, url: str):
+        """Download an image from a Zoho Creator URL and return its face encoding."""
+        resp = requests.get(url, headers=self._headers(), timeout=20)
+        resp.raise_for_status()
+
+        encoding, err = encode_face_from_bytes(resp.content)
+        if err:
+            raise ValueError(err)
+        return encoding
+
+    # ─── Attendance ────────────────────────────────────────────────────────────
+
+    def post_attendance(
+        self,
+        student_id: str,
+        student_name: str,
+        verification_type: str = "face_blink_verified",
+    ) -> dict:
+        """
+        Post a new attendance record to Zoho Creator.
+        Returns dict with 'success' bool and optional 'data'/'error' keys.
+        """
+        url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
+        now = datetime.now()
+
+        payload = {
+            "data": {
+                FIELD_ATT_STUDENT_ID: student_id,
+                FIELD_ATT_STUDENT_NAME: student_name,
+                FIELD_ATT_DATE: now.strftime("%d-%b-%Y"),
+                FIELD_ATT_TIME: now.strftime("%H:%M:%S"),
+                FIELD_ATT_STATUS: "Present",
+                FIELD_ATT_VERIFICATION: verification_type,
+            }
+        }
+
+        try:
+            resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+            resp.raise_for_status()
+            logger.info(f"Attendance posted for {student_name} (ID: {student_id})")
+            return {"success": True, "data": resp.json()}
+        except requests.HTTPError as e:
+            logger.error(f"HTTP error posting attendance: {e} — {e.response.text}")
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            logger.error(f"Unexpected error posting attendance: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ─── Utility ───────────────────────────────────────────────────────────────
+
+    def test_connection(self) -> dict:
+        """Quick connectivity test — returns org info."""
+        try:
+            url = f"https://creator.zoho.{ZOHO_DATA_CENTER}/api/v2/meta/app/{ZOHO_APP_NAME}"
+            resp = requests.get(url, headers=self._headers(), timeout=10)
+            return {"connected": resp.status_code == 200, "status_code": resp.status_code}
+        except Exception as e:
+            return {"connected": False, "error": str(e)}

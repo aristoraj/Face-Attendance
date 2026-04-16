@@ -1,0 +1,94 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Render deployment configuration
+# Docs: https://render.com/docs/render-yaml
+#
+# HOW TO USE:
+# 1. Push this repo to GitHub
+# 2. In Render dashboard → New → Web Service → Connect repo
+# 3. Render auto-detects this file
+# 4. Set environment variable values in Render dashboard (marked sync: false)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  - type: web
+    name: zoho-face-recognition
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free          # Change to "starter" or higher for production
+    region: singapore   # Options: oregon, frankfurt, singapore, ohio
+    healthCheckPath: /api/health
+
+    envVars:
+      # ── Zoho OAuth (set these in Render dashboard, not here) ────────────────
+      - key: ZOHO_CLIENT_ID
+        sync: false       # Set manually in Render dashboard
+
+      - key: ZOHO_CLIENT_SECRET
+        sync: false       # Set manually in Render dashboard
+
+      - key: ZOHO_REFRESH_TOKEN
+        sync: false       # Set manually in Render dashboard
+
+      # ── Zoho Creator App Config ─────────────────────────────────────────────
+      - key: ZOHO_ACCOUNT_OWNER
+        sync: false       # Your Zoho account username
+
+      - key: ZOHO_APP_NAME
+        value: student_management   # Your app's link name
+
+      - key: ZOHO_STUDENT_REPORT
+        value: All_Students         # Report link name with student photos
+
+      - key: ZOHO_ATTENDANCE_FORM
+        value: Attendance           # Attendance form link name
+
+      - key: ZOHO_DATA_CENTER
+        value: com                  # com | eu | in | com.au | jp
+
+      # ── Field Mappings (only change if your field names differ) ─────────────
+      - key: FIELD_STUDENT_ID
+        value: Student_ID
+
+      - key: FIELD_STUDENT_NAME
+        value: Name
+
+      - key: FIELD_STUDENT_PHOTO
+        value: Photo
+
+      - key: FIELD_STUDENT_ROLL
+        value: Roll_Number
+
+      - key: FIELD_STUDENT_CLASS
+        value: Class
+
+      - key: FIELD_ATT_STUDENT_ID
+        value: Student_ID
+
+      - key: FIELD_ATT_STUDENT_NAME
+        value: Student_Name
+
+      - key: FIELD_ATT_DATE
+        value: Date
+
+      - key: FIELD_ATT_TIME
+        value: Time
+
+      - key: FIELD_ATT_STATUS
+        value: Status
+
+      - key: FIELD_ATT_VERIFICATION
+        value: Verification_Type
+
+      # ── Face Recognition Settings ───────────────────────────────────────────
+      - key: FACE_MATCH_TOLERANCE
+        value: "0.55"    # Lower = stricter (range: 0.4–0.65)
+
+      - key: CACHE_TTL_SECONDS
+        value: "3600"    # 1 hour
+
+      # ── App Settings ────────────────────────────────────────────────────────
+      - key: SECRET_KEY
+        sync: false      # Set a random strong string in Render dashboard
+
+      - key: DEBUG
+        value: "false"

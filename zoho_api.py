@@ -11,7 +11,7 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN,
     ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_STUDENT_REPORT,
     ZOHO_ATTENDANCE_FORM, ZOHO_DATA_CENTER,
-    FIELD_STUDENT_ID, FIELD_STUDENT_NAME, FIELD_STUDENT_PHOTO,
+    FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME, FIELD_STUDENT_PHOTO,
     FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
 )
 from face_utils import encode_face_from_bytes
@@ -157,9 +157,12 @@ class ZohoCreatorAPI:
             logger.warning(f"No face embedding generated for '{name}' — photo may lack a clear frontal face.")
             return None
 
-        logger.info(f"Successfully encoded face for student '{name}'.")
+        # Student ID field (e.g. 1001) — used as the lookup display value in Attendance form
+        student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
+        logger.info(f"Successfully encoded face for student '{name}' (Student_ID: {student_number}).")
         return {
-            "id": student_id,   # Zoho system record ID — used in lookup field
+            "id": student_id,            # Zoho system record ID
+            "student_number": student_number,  # e.g. "1001" — used for lookup posting
             "name": name,
             "encoding": encoding,
         }
@@ -180,24 +183,25 @@ class ZohoCreatorAPI:
         self,
         student_id: str,
         student_name: str,
+        student_number: str = "",
         verification_type: str = "face_blink_verified",
     ) -> dict:
         """
         Post a new attendance record to Zoho Creator.
 
-        Student is a LOOKUP field — Zoho Creator requires the linked record's
-        system ID to be passed as: {"Student": {"ID": "<record_id>"}}
+        Student_ID is a LOOKUP field — Zoho Creator v2 expects the display value
+        of the linked record (e.g. "1001"), not a nested {"ID": "..."} object.
 
         Returns dict with 'success' bool and optional 'data'/'error' keys.
         """
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
         now = datetime.now()
 
+        # Use student_number (e.g. "1001") as the lookup display value
+        lookup_value = student_number if student_number else student_name
         payload = {
             "data": {
-                # Zoho Creator v2 lookup field: pass the display name (Name field value)
-                # NOT {"ID": "..."} — Creator v2 expects the linked record's display value
-                FIELD_ATT_STUDENT: student_name,
+                FIELD_ATT_STUDENT: lookup_value,
                 FIELD_ATT_DATE: now.strftime("%d-%b-%Y"),
                 FIELD_ATT_STATUS: "Present",   # value must match your Attendance dropdown option exactly
             }

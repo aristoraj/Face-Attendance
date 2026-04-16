@@ -33,15 +33,17 @@ ZOHO_DATA_CENTER = os.environ.get("ZOHO_DATA_CENTER", "com")
 # ─── Zoho Creator Field Mappings ──────────────────────────────────────────────
 # Student Database field names (link names, not display names)
 # "ID" is the Zoho Creator system record ID — always present, no custom field needed
-FIELD_STUDENT_ID   = "ID"        # System record ID (used for lookup posting)
-FIELD_STUDENT_NAME = os.environ.get("FIELD_STUDENT_NAME", "Name")
-FIELD_STUDENT_PHOTO = os.environ.get("FIELD_STUDENT_PHOTO", "Photo")
+FIELD_STUDENT_ID     = "ID"          # System record ID
+FIELD_STUDENT_NUMBER = os.environ.get("FIELD_STUDENT_NUMBER", "Student_ID")  # e.g. 1001
+FIELD_STUDENT_NAME   = os.environ.get("FIELD_STUDENT_NAME", "Name")
+FIELD_STUDENT_PHOTO  = os.environ.get("FIELD_STUDENT_PHOTO", "Photo")
 
 # Attendance form field names
-# Student is a LOOKUP field — posted as {"Student": {"ID": "<record_id>"}}
-FIELD_ATT_STUDENT  = os.environ.get("FIELD_ATT_STUDENT", "Student")   # lookup field
+# Student_ID is a LOOKUP field — Zoho Creator v2 expects the display value of the
+# referenced record (e.g. "1001"), not a nested {"ID": "..."} object
+FIELD_ATT_STUDENT  = os.environ.get("FIELD_ATT_STUDENT", "Student_ID")  # lookup field link name
 FIELD_ATT_DATE     = os.environ.get("FIELD_ATT_DATE", "Date")
-FIELD_ATT_STATUS   = os.environ.get("FIELD_ATT_STATUS", "Attendance") # your dropdown field
+FIELD_ATT_STATUS   = os.environ.get("FIELD_ATT_STATUS", "Attendance")   # dropdown field
 
 # ─── Face Recognition Settings ────────────────────────────────────────────────
 # Lower = stricter matching (0.4–0.6 recommended)
@@ -54,4 +56,4 @@ CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
 # ─── App Settings ─────────────────────────────────────────────────────────────
 PORT = int(os.environ.get("PORT", 5000))
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
-SECRET_KEY = os.environ.get("SECRET_KEY", "change-this-secret-key-in-production")
+SECRET_KEY = os.environ.get("SECRET_KEY", "change-this-secret-key-in-

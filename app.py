@@ -193,6 +193,7 @@ def verify():
         att_result = zoho.post_attendance(
             student_id=best_match["id"],
             student_name=best_match["name"],
+            student_number=best_match.get("student_number", ""),
             verification_type="face_blink_verified",
         )
 

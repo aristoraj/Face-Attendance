@@ -113,7 +113,10 @@ def encode_face_from_array(image_array: np.ndarray):
         faces,
         key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
     )
-    return largest.normed_embedding, None
+    embedding = largest.normed_embedding
+    if embedding is None:
+        return None, "Face detected but could not generate embedding (try facing the camera directly)."
+    return embedding, None
 
 
 def encode_face_from_bytes(image_bytes: bytes):
@@ -127,7 +130,7 @@ def encode_face_from_bytes(image_bytes: bytes):
 
 # ── Face matching ─────────────────────────────────────────────────────────────
 
-SIMILARITY_THRESHOLD = 0.35  # buffalo_sc: >0.35 = likely match, >0.50 = confident
+SIMILARITY_THRESHOLD = 0.25  # buffalo_sc: lowered from 0.35 — real-world lighting/angle variance
 
 
 def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: float = 0.55):
@@ -144,7 +147,7 @@ def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: 
     best_idx = int(np.argmax(similarities))
     best_sim = float(similarities[best_idx])
 
-    logger.debug(f"Best similarity: {best_sim:.3f} (threshold: {SIMILARITY_THRESHOLD})")
+    logger.info(f"Best similarity: {best_sim:.3f} (threshold: {SIMILARITY_THRESHOLD}) — student: {students[best_idx]['name']}")
 
     if best_sim >= SIMILARITY_THRESHOLD:
         confidence = round(

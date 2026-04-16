@@ -130,6 +130,8 @@ def verify():
         submitted_encoding, err = encode_face_from_array(image_array)
         if err:
             return jsonify({"success": False, "error": err}), 422
+        if submitted_encoding is None:
+            return jsonify({"success": False, "error": "Could not generate face embedding. Please try again."}), 422
 
         # ── Load student encodings (cached) ───────────────────────────────────
         students = get_students_cached()

@@ -56,4 +56,4 @@ CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
 # ─── App Settings ─────────────────────────────────────────────────────────────
 PORT = int(os.environ.get("PORT", 5000))
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
-SECRET_KEY = os.environ.get("SECRET_KEY", "change-this-secret-key-in-
+SECRET_KEY = os.environ.get("SECRET_KEY", "change-this-secret-key-in-production")

@@ -109,7 +109,17 @@ class ZohoCreatorAPI:
         """Parse a raw Zoho Creator record into a student dict with face encoding."""
         # System record ID — always present in every Zoho Creator record
         student_id = record.get("ID") or record.get("id")
-        name = record.get(FIELD_STUDENT_NAME) or "Unknown"
+
+        # Zoho Creator Name component fields return a dict — extract display_value
+        name_raw = record.get(FIELD_STUDENT_NAME)
+        if isinstance(name_raw, dict):
+            name = (
+                name_raw.get("display_value")
+                or f"{name_raw.get('first_name', '')} {name_raw.get('last_name', '')}".strip()
+                or "Unknown"
+            )
+        else:
+            name = str(name_raw).strip() if name_raw else "Unknown"
 
         logger.info(f"Processing student '{name}' (ID: {student_id}), raw record keys: {list(record.keys())}")
 
@@ -188,18 +198,31 @@ class ZohoCreatorAPI:
                 # Lookup field — links to the Student Database record by system ID
                 FIELD_ATT_STUDENT: {"ID": student_id},
                 FIELD_ATT_DATE: now.strftime("%d-%b-%Y"),
-                FIELD_ATT_STATUS: "Present",   # value must match your Attendance dropdown
+                FIELD_ATT_STATUS: "Present",   # value must match your Attendance dropdown option exactly
             }
         }
 
+        logger.info(f"Posting attendance — URL: {url}")
+        logger.info(f"Payload: {payload}")
+
         try:
             resp = requests.post(url, headers=self._headers(), json=payload, timeout=15)
+            logger.info(f"Zoho attendance response HTTP {resp.status_code}: {resp.text[:500]}")
             resp.raise_for_status()
-            logger.info(f"Attendance posted for {student_name} (ID: {student_id})")
-            return {"success": True, "data": resp.json()}
+
+            result = resp.json()
+            # Zoho Creator returns code 3000 on success; other codes indicate errors
+            zoho_code = result.get("code")
+            if zoho_code is not None and zoho_code != 3000:
+                logger.error(f"Zoho rejected attendance record: code={zoho_code} message={result.get('message', '')} details={result}")
+                return {"success": False, "error": f"Zoho error code {zoho_code}: {result.get('message', '')}"}
+
+            logger.info(f"Attendance posted successfully for {student_name} (ID: {student_id}) — Zoho response: {result}")
+            return {"success": True, "data": result}
+
         except requests.HTTPError as e:
             logger.error(f"HTTP error posting attendance: {e} — {e.response.text}")
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": f"HTTP {e.response.status_code}: {e.response.text[:300]}"}
         except Exception as e:
             logger.error(f"Unexpected error posting attendance: {e}")
             return {"success": False, "error": str(e)}

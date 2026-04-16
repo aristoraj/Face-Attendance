@@ -761,8 +761,16 @@ async function captureAndVerify() {
     }
 
     if (data.matched) {
-      showSuccess(data);
       activateStep(4);
+      showSuccess(data);
+      // Mark all 4 steps green after attendance posted
+      setTimeout(() => {
+        for (let i = 1; i <= 4; i++) {
+          const el = document.getElementById(`step-${i}`);
+          el.classList.remove('active');
+          el.classList.add('done');
+        }
+      }, 600);
     } else {
       showNoMatch(data.message);
       resetForRetry();

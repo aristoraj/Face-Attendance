@@ -16,7 +16,7 @@ ZOHO_REFRESH_TOKEN = os.environ.get("ZOHO_REFRESH_TOKEN", "")
 
 # ─── Zoho Creator App Config ──────────────────────────────────────────────────
 # The Zoho account username/email owner of the Creator app
-ZOHO_ACCOUNT_OWNER = os.environ.get("ZOHO_ACCOUNT_OWNER", "")
+ZOHO_ACCOUNT_OWNER = os.environ.get("ZOHO_ACCOUNT_OWNER", "2demoedzola1")
 
 # The link name of your Zoho Creator application (from the app URL)
 ZOHO_APP_NAME = os.environ.get("ZOHO_APP_NAME", "attendance-tracking")

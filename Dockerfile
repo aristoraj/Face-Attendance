@@ -16,8 +16,12 @@
 
 FROM python:3.10-slim-bullseye
 
-# ── System libraries required by OpenCV and insightface ───────────────────────
+# ── System libraries ─────────────────────────────────────────────────────────
+# build-essential (g++) needed for insightface's tiny Cython mesh extension.
+# Unlike dlib (thousands of C++ files, 8GB OOM), this is ONE small file
+# that compiles in ~8 seconds using ~50MB RAM — totally safe.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libgomp1 \

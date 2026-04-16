@@ -14,7 +14,7 @@ set -e  # Exit on any error
 
 # ── Config (pre-filled) ───────────────────────────────────────────────────────
 GITHUB_USERNAME="aristoraj"
-REPO_NAME="zoho-face-recognition"
+REPO_NAME="Face-Attendance"
 REPO_DESC="Real-time face recognition attendance module for Zoho Creator with eye blink liveness detection"
 VISIBILITY="public"   # Change to "private" if you want
 

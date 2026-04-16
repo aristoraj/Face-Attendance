@@ -86,32 +86,29 @@ def cache_refresh():
 
 @app.route("/api/debug/students")
 def debug_students():
-    """
-    Debug endpoint — fetches first 3 raw Zoho records (no face encoding)
-    so you can verify field names and photo URL format.
-    Only enable during debugging; disable in production.
-    """
+    """Debug — raw student records to verify field names."""
     try:
         import requests as req
+        from config import ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM
         token = zoho._refresh_token()
-        url = f"{zoho._base_url}/report/{__import__('config').ZOHO_STUDENT_REPORT}"
-        resp = req.get(
-            url,
-            headers={"Authorization": f"Zoho-oauthtoken {token}"},
-            params={"from": 1, "limit": 3},
-            timeout=20,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        records = data.get("data", [])
-        # Return raw records so we can see field names and photo URL format
+        headers = {"Authorization": f"Zoho-oauthtoken {token}"}
+
+        # Fetch student records
+        s_url = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}"
+        s_resp = req.get(s_url, headers=headers, params={"from": 1, "limit": 3}, timeout=20)
+        s_resp.raise_for_status()
+        s_records = s_resp.json().get("data", [])
+
+        # Fetch attendance records to see real field names
+        a_url = f"{zoho._base_url}/report/All_Attendances"
+        a_resp = req.get(a_url, headers=headers, params={"from": 1, "limit": 3}, timeout=20)
+        a_records = a_resp.json().get("data", []) if a_resp.status_code == 200 else []
+
         return jsonify({
-            "total_raw_records": len(records),
-            "sample_records": [
-                {k: (str(v)[:150] if v else None) for k, v in r.items()}
-                for r in records[:3]
-            ],
-            "all_field_keys": list(records[0].keys()) if records else [],
+            "student_field_keys": list(s_records[0].keys()) if s_records else [],
+            "student_sample": [{k: str(v)[:100] for k, v in r.items()} for r in s_records[:2]],
+            "attendance_field_keys": list(a_records[0].keys()) if a_records else [],
+            "attendance_sample": [{k: str(v)[:100] for k, v in r.items()} for r in a_records[:2]],
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500

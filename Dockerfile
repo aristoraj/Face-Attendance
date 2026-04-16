@@ -1,14 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Zoho Face Recognition Module — Dockerfile
 # Uses slim Python image with dlib compiled from source.
-# This image is used by Render for deployment.
 # Build time: ~10–15 minutes on first deploy (dlib compilation).
 # Subsequent deploys use Docker layer cache and are much faster.
+#
+# FIX: cmake installed via apt-get (system binary), NOT pip.
+# pip's cmake wrapper breaks dlib's build subprocess with:
+#   ModuleNotFoundError: No module named 'cmake'
 # ─────────────────────────────────────────────────────────────────────────────
 
 FROM python:3.11-slim-bullseye
 
-# ── System build dependencies for dlib ────────────────────────────────────────
+# ── System dependencies — cmake installed here via apt (real binary) ──────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -17,16 +20,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libx11-dev \
     libatlas-base-dev \
     python3-dev \
-    wget \
     && rm -rf /var/lib/apt/lists/*
+
+# ── Verify cmake is available as a real binary ────────────────────────────────
+RUN cmake --version
 
 # ── Working directory ─────────────────────────────────────────────────────────
 WORKDIR /app
 
-# ── Install heavy packages first (cached unless requirements change) ───────────
-# dlib must be installed before face_recognition
-RUN pip install --no-cache-dir cmake==3.27.9
-RUN pip install --no-cache-dir dlib==19.24.4
+# ── Install dlib and face-recognition (heavy, cached layer) ──────────────────
+# No pip cmake needed — apt cmake above is on PATH and works correctly
+RUN pip install --no-cache-dir dlib==19.24.2
 RUN pip install --no-cache-dir face-recognition==1.3.0
 
 # ── Copy requirements and install remaining packages ──────────────────────────
@@ -44,5 +48,4 @@ USER appuser
 EXPOSE 5000
 
 # ── Startup command ───────────────────────────────────────────────────────────
-# 2 workers: enough for a free-tier instance, won't OOM on Render 512MB RAM
 CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers 2 --timeout 120 --log-level info"]

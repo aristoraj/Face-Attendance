@@ -195,8 +195,9 @@ class ZohoCreatorAPI:
 
         payload = {
             "data": {
-                # Lookup field — links to the Student Database record by system ID
-                FIELD_ATT_STUDENT: {"ID": student_id},
+                # Zoho Creator v2 lookup field: pass the display name (Name field value)
+                # NOT {"ID": "..."} — Creator v2 expects the linked record's display value
+                FIELD_ATT_STUDENT: student_name,
                 FIELD_ATT_DATE: now.strftime("%d-%b-%Y"),
                 FIELD_ATT_STATUS: "Present",   # value must match your Attendance dropdown option exactly
             }

@@ -84,6 +84,39 @@ def cache_refresh():
     })
 
 
+@app.route("/api/debug/students")
+def debug_students():
+    """
+    Debug endpoint — fetches first 3 raw Zoho records (no face encoding)
+    so you can verify field names and photo URL format.
+    Only enable during debugging; disable in production.
+    """
+    try:
+        import requests as req
+        token = zoho._refresh_token()
+        url = f"{zoho._base_url}/report/{__import__('config').ZOHO_STUDENT_REPORT}"
+        resp = req.get(
+            url,
+            headers={"Authorization": f"Zoho-oauthtoken {token}"},
+            params={"from": 1, "limit": 3},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        records = data.get("data", [])
+        # Return raw records so we can see field names and photo URL format
+        return jsonify({
+            "total_raw_records": len(records),
+            "sample_records": [
+                {k: (str(v)[:150] if v else None) for k, v in r.items()}
+                for r in records[:3]
+            ],
+            "all_field_keys": list(records[0].keys()) if records else [],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/verify", methods=["POST"])
 def verify():
     """

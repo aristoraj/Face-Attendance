@@ -111,11 +111,15 @@ class ZohoCreatorAPI:
         student_id = record.get("ID") or record.get("id")
         name = record.get(FIELD_STUDENT_NAME) or "Unknown"
 
+        logger.info(f"Processing student '{name}' (ID: {student_id}), raw record keys: {list(record.keys())}")
+
         # Photo field — Zoho Creator returns image fields as a dict with a 'url' key
         photo = record.get(FIELD_STUDENT_PHOTO)
         if not photo:
-            logger.debug(f"Skipping student '{name}' — no photo field.")
+            logger.warning(f"Skipping student '{name}' — photo field '{FIELD_STUDENT_PHOTO}' is missing or empty. Record keys: {list(record.keys())}")
             return None
+
+        logger.info(f"Student '{name}' photo field value: {repr(photo)[:200]}")
 
         if isinstance(photo, dict):
             photo_url = photo.get("url") or photo.get("value") or photo.get("download_url")
@@ -123,7 +127,15 @@ class ZohoCreatorAPI:
             photo_url = str(photo)
 
         if not photo_url:
+            logger.warning(f"Skipping student '{name}' — could not extract URL from photo field: {repr(photo)[:200]}")
             return None
+
+        # Zoho Creator sometimes returns a relative URL — make it absolute
+        if photo_url.startswith("/"):
+            photo_url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{photo_url}"
+            logger.info(f"Converted relative photo URL to absolute: {photo_url}")
+
+        logger.info(f"Downloading photo for '{name}' from: {photo_url[:100]}")
 
         try:
             encoding = self._download_and_encode(photo_url)
@@ -132,9 +144,10 @@ class ZohoCreatorAPI:
             return None
 
         if encoding is None:
-            logger.debug(f"No face found in photo for '{name}', skipping.")
+            logger.warning(f"No face embedding generated for '{name}' — photo may lack a clear frontal face.")
             return None
 
+        logger.info(f"Successfully encoded face for student '{name}'.")
         return {
             "id": student_id,   # Zoho system record ID — used in lookup field
             "name": name,

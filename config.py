@@ -19,7 +19,7 @@ ZOHO_REFRESH_TOKEN = os.environ.get("ZOHO_REFRESH_TOKEN", "")
 ZOHO_ACCOUNT_OWNER = os.environ.get("ZOHO_ACCOUNT_OWNER", "")
 
 # The link name of your Zoho Creator application (from the app URL)
-ZOHO_APP_NAME = os.environ.get("ZOHO_APP_NAME", "student_management")
+ZOHO_APP_NAME = os.environ.get("ZOHO_APP_NAME", "attendance-tracking")
 
 # Link name of the report that lists all students (with photo field)
 ZOHO_STUDENT_REPORT = os.environ.get("ZOHO_STUDENT_REPORT", "All_Student_Databases")

@@ -31,13 +31,13 @@ services:
 
       # ── Zoho Creator App Config ─────────────────────────────────────────────
       - key: ZOHO_ACCOUNT_OWNER
-        sync: false       # Your Zoho account username
+        sync: 2demoedzola1       # Your Zoho account username
 
       - key: ZOHO_APP_NAME
-        value: student_management   # Your app's link name
+        value: attendance-tracking   # Your app's link name
 
       - key: ZOHO_STUDENT_REPORT
-        value: All_Students         # Report link name with student photos
+        value: All_Student_Databases         # Report link name with student photos
 
       - key: ZOHO_ATTENDANCE_FORM
         value: Attendance           # Attendance form link name
@@ -45,39 +45,23 @@ services:
       - key: ZOHO_DATA_CENTER
         value: com                  # com | eu | in | com.au | jp
 
-      # ── Field Mappings (only change if your field names differ) ─────────────
-      - key: FIELD_STUDENT_ID
-        value: Student_ID
-
+      # ── Field Mappings — matched to your actual Zoho Creator forms ──────────
+      # Student Database fields
       - key: FIELD_STUDENT_NAME
-        value: Name
+        value: Name          # Display name field in Student Database
 
       - key: FIELD_STUDENT_PHOTO
-        value: Photo
+        value: Photo         # Image field in Student Database
 
-      - key: FIELD_STUDENT_ROLL
-        value: Roll_Number
-
-      - key: FIELD_STUDENT_CLASS
-        value: Class
-
-      - key: FIELD_ATT_STUDENT_ID
-        value: Student_ID
-
-      - key: FIELD_ATT_STUDENT_NAME
-        value: Student_Name
+      # Attendance form fields
+      - key: FIELD_ATT_STUDENT
+        value: Student       # Lookup field (links to Student Database by system ID)
 
       - key: FIELD_ATT_DATE
-        value: Date
-
-      - key: FIELD_ATT_TIME
-        value: Time
+        value: Date          # Date field in Attendance form
 
       - key: FIELD_ATT_STATUS
-        value: Status
-
-      - key: FIELD_ATT_VERIFICATION
-        value: Verification_Type
+        value: Attendance    # Dropdown field — must match an option in your dropdown (e.g. "Present")
 
       # ── Face Recognition Settings ───────────────────────────────────────────
       - key: FACE_MATCH_TOLERANCE
@@ -91,4 +75,4 @@ services:
         sync: false      # Set a random strong string in Render dashboard
 
       - key: DEBUG
-        value: "false"
+      

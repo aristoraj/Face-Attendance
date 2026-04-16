@@ -22,7 +22,7 @@ ZOHO_ACCOUNT_OWNER = os.environ.get("ZOHO_ACCOUNT_OWNER", "")
 ZOHO_APP_NAME = os.environ.get("ZOHO_APP_NAME", "student_management")
 
 # Link name of the report that lists all students (with photo field)
-ZOHO_STUDENT_REPORT = os.environ.get("ZOHO_STUDENT_REPORT", "All_Students")
+ZOHO_STUDENT_REPORT = os.environ.get("ZOHO_STUDENT_REPORT", "All_Student_Databases")
 
 # Link name of the attendance form to post records into
 ZOHO_ATTENDANCE_FORM = os.environ.get("ZOHO_ATTENDANCE_FORM", "Attendance")
@@ -31,20 +31,17 @@ ZOHO_ATTENDANCE_FORM = os.environ.get("ZOHO_ATTENDANCE_FORM", "Attendance")
 ZOHO_DATA_CENTER = os.environ.get("ZOHO_DATA_CENTER", "com")
 
 # ─── Zoho Creator Field Mappings ──────────────────────────────────────────────
-# Student form field names (link names, not display names)
-FIELD_STUDENT_ID = os.environ.get("FIELD_STUDENT_ID", "Student_ID")
+# Student Database field names (link names, not display names)
+# "ID" is the Zoho Creator system record ID — always present, no custom field needed
+FIELD_STUDENT_ID   = "ID"        # System record ID (used for lookup posting)
 FIELD_STUDENT_NAME = os.environ.get("FIELD_STUDENT_NAME", "Name")
 FIELD_STUDENT_PHOTO = os.environ.get("FIELD_STUDENT_PHOTO", "Photo")
-FIELD_STUDENT_ROLL = os.environ.get("FIELD_STUDENT_ROLL", "Roll_Number")
-FIELD_STUDENT_CLASS = os.environ.get("FIELD_STUDENT_CLASS", "Class")
 
 # Attendance form field names
-FIELD_ATT_STUDENT_ID = os.environ.get("FIELD_ATT_STUDENT_ID", "Student_ID")
-FIELD_ATT_STUDENT_NAME = os.environ.get("FIELD_ATT_STUDENT_NAME", "Student_Name")
-FIELD_ATT_DATE = os.environ.get("FIELD_ATT_DATE", "Date")
-FIELD_ATT_TIME = os.environ.get("FIELD_ATT_TIME", "Time")
-FIELD_ATT_STATUS = os.environ.get("FIELD_ATT_STATUS", "Status")
-FIELD_ATT_VERIFICATION = os.environ.get("FIELD_ATT_VERIFICATION", "Verification_Type")
+# Student is a LOOKUP field — posted as {"Student": {"ID": "<record_id>"}}
+FIELD_ATT_STUDENT  = os.environ.get("FIELD_ATT_STUDENT", "Student")   # lookup field
+FIELD_ATT_DATE     = os.environ.get("FIELD_ATT_DATE", "Date")
+FIELD_ATT_STATUS   = os.environ.get("FIELD_ATT_STATUS", "Attendance") # your dropdown field
 
 # ─── Face Recognition Settings ────────────────────────────────────────────────
 # Lower = stricter matching (0.4–0.6 recommended)

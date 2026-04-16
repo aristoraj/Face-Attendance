@@ -12,9 +12,7 @@ from config import (
     ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_STUDENT_REPORT,
     ZOHO_ATTENDANCE_FORM, ZOHO_DATA_CENTER,
     FIELD_STUDENT_ID, FIELD_STUDENT_NAME, FIELD_STUDENT_PHOTO,
-    FIELD_STUDENT_ROLL, FIELD_STUDENT_CLASS,
-    FIELD_ATT_STUDENT_ID, FIELD_ATT_STUDENT_NAME,
-    FIELD_ATT_DATE, FIELD_ATT_TIME, FIELD_ATT_STATUS, FIELD_ATT_VERIFICATION,
+    FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS,
 )
 from face_utils import encode_face_from_bytes
 
@@ -109,16 +107,11 @@ class ZohoCreatorAPI:
 
     def _process_record(self, record: dict) -> dict | None:
         """Parse a raw Zoho Creator record into a student dict with face encoding."""
-        student_id = (
-            record.get(FIELD_STUDENT_ID)
-            or record.get("ID")
-            or record.get("id")
-        )
-        name = record.get(FIELD_STUDENT_NAME) or record.get("Student_Name") or "Unknown"
-        roll = record.get(FIELD_STUDENT_ROLL, "")
-        cls = record.get(FIELD_STUDENT_CLASS, "")
+        # System record ID — always present in every Zoho Creator record
+        student_id = record.get("ID") or record.get("id")
+        name = record.get(FIELD_STUDENT_NAME) or "Unknown"
 
-        # Photo field can be a URL string or a dict with a url key
+        # Photo field — Zoho Creator returns image fields as a dict with a 'url' key
         photo = record.get(FIELD_STUDENT_PHOTO)
         if not photo:
             logger.debug(f"Skipping student '{name}' — no photo field.")
@@ -143,10 +136,8 @@ class ZohoCreatorAPI:
             return None
 
         return {
-            "id": student_id,
+            "id": student_id,   # Zoho system record ID — used in lookup field
             "name": name,
-            "roll_number": roll,
-            "class": cls,
             "encoding": encoding,
         }
 
@@ -170,6 +161,10 @@ class ZohoCreatorAPI:
     ) -> dict:
         """
         Post a new attendance record to Zoho Creator.
+
+        Student is a LOOKUP field — Zoho Creator requires the linked record's
+        system ID to be passed as: {"Student": {"ID": "<record_id>"}}
+
         Returns dict with 'success' bool and optional 'data'/'error' keys.
         """
         url = f"{self._base_url}/form/{ZOHO_ATTENDANCE_FORM}"
@@ -177,12 +172,10 @@ class ZohoCreatorAPI:
 
         payload = {
             "data": {
-                FIELD_ATT_STUDENT_ID: student_id,
-                FIELD_ATT_STUDENT_NAME: student_name,
+                # Lookup field — links to the Student Database record by system ID
+                FIELD_ATT_STUDENT: {"ID": student_id},
                 FIELD_ATT_DATE: now.strftime("%d-%b-%Y"),
-                FIELD_ATT_TIME: now.strftime("%H:%M:%S"),
-                FIELD_ATT_STATUS: "Present",
-                FIELD_ATT_VERIFICATION: verification_type,
+                FIELD_ATT_STATUS: "Present",   # value must match your Attendance dropdown
             }
         }
 

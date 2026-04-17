@@ -233,20 +233,6 @@
     .blink-count { font-size: 20px; font-weight: 700; color: var(--warning); line-height: 1; }
     .blink-count.complete { color: var(--success); }
 
-    /* Attempt counter */
-    .attempt-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      background: rgba(220,38,38,0.1);
-      border: 1px solid rgba(220,38,38,0.3);
-      color: #f87171;
-      border-radius: 6px;
-      padding: 3px 10px;
-      font-size: 12px;
-      margin-top: 8px;
-    }
-
     /* Result card */
     .result-card {
       background: var(--bg-card);
@@ -311,57 +297,6 @@
     .spinner.show { display: flex; }
     .spin { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Manual Fallback Panel ────────────────────────────────────────────── */
-    .manual-panel {
-      background: var(--bg-card);
-      border: 1px solid var(--warning);
-      border-radius: var(--radius);
-      padding: 20px;
-      display: none;
-    }
-    .manual-panel.show { display: block; }
-    .manual-panel h4 {
-      font-size: 14px;
-      font-weight: 600;
-      color: #fbbf24;
-      margin-bottom: 4px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .manual-panel p {
-      font-size: 12px;
-      color: var(--text-muted);
-      margin-bottom: 14px;
-    }
-    .manual-select {
-      width: 100%;
-      background: var(--bg-input);
-      border: 1px solid var(--border);
-      color: var(--text);
-      border-radius: 8px;
-      padding: 9px 12px;
-      font-size: 13px;
-      margin-bottom: 12px;
-      appearance: none;
-      cursor: pointer;
-    }
-    .manual-select:focus { outline: none; border-color: var(--accent); }
-    .btn-manual-submit {
-      width: 100%;
-      padding: 10px;
-      background: var(--warning);
-      color: #000;
-      border: none;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity .2s;
-    }
-    .btn-manual-submit:hover    { opacity: .85; }
-    .btn-manual-submit:disabled { opacity: .5; cursor: not-allowed; }
 
     /* Toast */
     .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
@@ -465,13 +400,6 @@
         <div class="step-label"><strong>Attendance posted</strong> to Zoho Creator</div>
       </div>
 
-      <!-- Attempt counter (shown after first failure) -->
-      <div id="attempt-counter-wrap" style="display:none; padding: 8px 0 4px;">
-        <span class="attempt-badge">
-          <i class="bi bi-exclamation-triangle"></i>
-          <span id="attempt-text">0 / 3 attempts failed</span>
-        </span>
-      </div>
     </div>
 
     <!-- Spinner -->
@@ -489,17 +417,6 @@
       </button>
     </div>
 
-    <!-- Manual Fallback Panel (shown after 3 failed attempts) -->
-    <div class="manual-panel" id="manual-panel">
-      <h4><i class="bi bi-shield-exclamation"></i> Manual Attendance Override</h4>
-      <p>Face recognition failed 3 times. A facilitator can manually mark attendance below.</p>
-      <select class="manual-select" id="manual-student-select">
-        <option value="">— Loading students... —</option>
-      </select>
-      <button class="btn-manual-submit" id="btn-manual-submit" onclick="submitManualAttendance()">
-        <i class="bi bi-check-circle me-1"></i> Mark Present Manually
-      </button>
-    </div>
 
   </div>
 </main>
@@ -523,7 +440,6 @@ const BLINKS_REQUIRED  = 2;
 const EAR_CLOSE_THRESH = 0.18;
 const EAR_OPEN_THRESH  = 0.23;
 const EAR_SMOOTH_ALPHA = 0.3;
-const MAX_FAIL_BEFORE_MANUAL = 3;
 
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
@@ -538,7 +454,6 @@ let state = {
   blinkVerified: false,
   verifying:     false,
   done:          false,
-  failCount:     0,   // consecutive unrecognised attempts
 };
 
 let videoEl, canvasEl, ctx, faceMeshInstance, cameraInstance;
@@ -557,9 +472,6 @@ const spinnerEl    = document.getElementById('spinner');
 const resultCard   = document.getElementById('result-card');
 const resultBadge  = document.getElementById('result-badge');
 const studentInfo  = document.getElementById('student-info');
-const manualPanel  = document.getElementById('manual-panel');
-const attemptWrap  = document.getElementById('attempt-counter-wrap');
-const attemptText  = document.getElementById('attempt-text');
 
 // ── Init: apply URL params ────────────────────────────────────────────────────
 (function applyUrlParams() {
@@ -773,8 +685,6 @@ async function captureAndVerify() {
     }
 
     if (data.matched) {
-      state.failCount = 0;   // reset on success
-      updateAttemptCounter();
       activateStep(4);
       showSuccess(data);
       setTimeout(() => {
@@ -785,116 +695,14 @@ async function captureAndVerify() {
         }
       }, 600);
     } else {
-      onFailedAttempt();
       showNoMatch(data.message);
+      resetForRetry();
     }
 
   } catch (err) {
     spinnerEl.classList.remove('show');
     showError(`Network error: ${err.message}`);
-    onFailedAttempt();
-  }
-}
-
-// ── Failed Attempt Tracking ───────────────────────────────────────────────────
-function onFailedAttempt() {
-  state.failCount++;
-  updateAttemptCounter();
-  if (state.failCount >= MAX_FAIL_BEFORE_MANUAL) {
-    showManualFallback();
-  } else {
     resetForRetry();
-  }
-}
-
-function updateAttemptCounter() {
-  if (state.failCount === 0) {
-    attemptWrap.style.display = 'none';
-    return;
-  }
-  attemptWrap.style.display = 'block';
-  attemptText.textContent = `${state.failCount} / ${MAX_FAIL_BEFORE_MANUAL} attempts failed`;
-}
-
-// ── Manual Fallback ───────────────────────────────────────────────────────────
-async function showManualFallback() {
-  manualPanel.classList.add('show');
-  toast('Face recognition failed 3 times — manual override available', 'danger');
-
-  // Load student list for dropdown
-  const select = document.getElementById('manual-student-select');
-  select.innerHTML = '<option value="">Loading students...</option>';
-
-  try {
-    const url = BATCH_ID
-      ? `${API_BASE}/api/students/list?batch_id=${encodeURIComponent(BATCH_ID)}`
-      : `${API_BASE}/api/students/list`;
-    const resp = await fetch(url);
-    const data = await resp.json();
-
-    if (data.success && data.students.length) {
-      select.innerHTML = '<option value="">— Select student —</option>'
-        + data.students
-            .sort((a, b) => a.name.localeCompare(b.name))
-            .map(s => `<option value="${esc(s.id)}" data-name="${esc(s.name)}">${esc(s.name)}${s.student_number ? ` (${esc(s.student_number)})` : ''}</option>`)
-            .join('');
-    } else {
-      select.innerHTML = '<option value="">No students found</option>';
-    }
-  } catch (e) {
-    select.innerHTML = '<option value="">Failed to load — retry</option>';
-  }
-}
-
-async function submitManualAttendance() {
-  const select = document.getElementById('manual-student-select');
-  const btn    = document.getElementById('btn-manual-submit');
-
-  if (!select.value) {
-    toast('Please select a student first.', 'danger');
-    return;
-  }
-
-  const studentId   = select.value;
-  const studentName = select.options[select.selectedIndex].dataset.name || 'Unknown';
-
-  btn.disabled = true;
-  btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i> Posting...';
-
-  try {
-    const body = { student_id: studentId, student_name: studentName, reason: 'face_recognition_failed' };
-    if (SESSION_ID) body.session_id = SESSION_ID;
-
-    const resp = await fetch(`${API_BASE}/api/manual-attendance`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
-    });
-    const data = await resp.json();
-
-    if (data.duplicate) {
-      toast(`${studentName} is already marked present today.`, 'warning');
-    } else if (data.attendance_posted) {
-      toast(`✓ Manual attendance posted for ${studentName}`, 'success');
-      manualPanel.classList.remove('show');
-      // Show a success result card
-      resultBadge.className = 'result-badge warning';
-      resultBadge.innerHTML = `<i class="bi bi-person-check-fill"></i> Manual Override`;
-      studentInfo.innerHTML = `
-        <div class="info-row"><span class="info-key">Name</span><span class="info-value">${esc(studentName)}</span></div>
-        <div class="info-row"><span class="info-key">Attendance</span><span class="info-value att-ok"><i class="bi bi-check-circle me-1"></i>Marked Present</span></div>
-        <div class="info-row"><span class="info-key">Method</span><span class="info-value">Facilitator Override</span></div>
-      `;
-      resultCard.classList.add('show', 'warning');
-      state.done = true;
-    } else {
-      toast(`Failed: ${data.message}`, 'danger');
-    }
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'danger');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="bi bi-check-circle me-1"></i> Mark Present Manually';
   }
 }
 
@@ -951,7 +759,7 @@ function showNoMatch(message) {
       <span class="info-value" style="color:var(--danger)">${esc(message || 'Face not found in database.')}</span>
     </div>
     <div class="info-row"><span class="info-key">Action</span>
-      <span class="info-value">${state.failCount >= MAX_FAIL_BEFORE_MANUAL ? 'Use manual override below ↓' : 'Please try again'}</span>
+      <span class="info-value">Please try again or contact admin.</span>
     </div>
   `;
   resultCard.classList.add('show', 'danger');
@@ -983,10 +791,7 @@ function resetForRetry() {
 }
 
 function resetVerification() {
-  state.done      = false;
-  state.failCount = 0;
-  manualPanel.classList.remove('show');
-  attemptWrap.style.display = 'none';
+  state.done = false;
   resultCard.classList.remove('show', 'success', 'danger', 'warning');
   resetForRetry();
 }

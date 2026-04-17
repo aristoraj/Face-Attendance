@@ -3,14 +3,12 @@ Zoho Creator Face Recognition Attendance Module
 Flask backend — serves the webcam UI and handles face verification.
 
 Endpoints:
-  GET  /                          → Serve the webcam frontend
-  GET  /api/health                → Health check (also used by keepalive ping)
-  GET  /api/cache/status          → Cache status info
-  POST /api/cache/refresh         → Force refresh student face cache
-  POST /api/verify                → Verify face + post attendance
-  GET  /api/students/list         → Student list for manual fallback dropdown
-  POST /api/manual-attendance     → Facilitator override attendance posting
-  GET  /api/debug/students        → Debug raw Zoho records
+  GET  /                    → Serve the webcam frontend
+  GET  /api/health          → Health check (also used by keepalive ping)
+  GET  /api/cache/status    → Cache status info
+  POST /api/cache/refresh   → Force refresh student face cache
+  POST /api/verify          → Verify face + post attendance
+  GET  /api/debug/students  → Debug raw Zoho records
 """
 
 import logging
@@ -131,30 +129,27 @@ def cache_status():
 @app.route("/api/cache/refresh", methods=["POST"])
 def cache_refresh():
     batch_id = request.args.get("batch_id") or (request.get_json(silent=True) or {}).get("batch_id")
-    cache = _get_cache(batch_id)
-    cache.invalidate()
-    students = get_students_cached(batch_id=batch_id)
-    return jsonify({
-        "success":         True,
-        "students_loaded": len(students),
-        "batch_id":        batch_id or "ALL",
-        "message":         f"Cache refreshed. {len(students)} student encodings loaded.",
-    })
-
-
-@app.route("/api/students/list")
-def students_list():
-    """
-    Returns lightweight student list (id + name) for the manual fallback dropdown.
-    Scoped to batch_id if provided.
-    """
-    batch_id = request.args.get("batch_id")
     try:
-        students = zoho.get_students_list(batch_id=batch_id)
-        return jsonify({"success": True, "students": students})
+        cache = _get_cache(batch_id)
+        cache.invalidate()
+        students = get_students_cached(batch_id=batch_id)
+        return jsonify({
+            "success":         True,
+            "students_loaded": len(students),
+            "batch_id":        batch_id or "ALL",
+            "message":         f"Cache refreshed. {len(students)} student encodings loaded.",
+        })
     except Exception as e:
-        logger.exception("Error fetching students list")
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.exception("Cache refresh failed")
+        msg = str(e)
+        if "400" in msg and "oauth" in msg.lower():
+            hint = "Zoho OAuth token is invalid or expired — regenerate ZOHO_REFRESH_TOKEN in Render."
+        elif "401" in msg:
+            hint = "Zoho authentication failed — check your OAuth credentials in Render."
+        else:
+            hint = msg
+        return jsonify({"success": False, "error": hint}), 500
+
 
 
 @app.route("/api/verify", methods=["POST"])
@@ -272,61 +267,6 @@ def verify():
         logger.exception("Unexpected error in /api/verify")
         return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
 
-
-@app.route("/api/manual-attendance", methods=["POST"])
-def manual_attendance():
-    """
-    Facilitator override — mark attendance manually after 3 failed face attempts.
-
-    Expected JSON body:
-    {
-        "student_id":   "4445260000003610007",   ← Zoho system record ID
-        "student_name": "Priya Devi",
-        "session_id":   "4445260000003999001",   ← optional
-        "reason":       "face_recognition_failed"
-    }
-    """
-    try:
-        data = request.get_json(force=True)
-        if not data or not data.get("student_id"):
-            return jsonify({"success": False, "error": "student_id is required."}), 400
-
-        student_id   = data["student_id"]
-        student_name = data.get("student_name", "Unknown")
-        session_id   = data.get("session_id") or None
-
-        # Still run duplicate guard
-        from datetime import datetime
-        today_str = datetime.now().strftime("%d-%b-%Y")
-        if zoho.check_duplicate_attendance(student_id, today_str, session_id=session_id):
-            return jsonify({
-                "success":           True,
-                "duplicate":         True,
-                "attendance_posted": False,
-                "message":           f"{student_name} is already marked present today.",
-            })
-
-        att_result = zoho.post_attendance(
-            student_id=student_id,
-            student_name=student_name,
-            verification_type="manual_facilitator_override",
-            session_id=session_id,
-        )
-
-        return jsonify({
-            "success":           True,
-            "duplicate":         False,
-            "attendance_posted": att_result.get("success", False),
-            "message": (
-                f"Manual attendance posted for {student_name}."
-                if att_result.get("success")
-                else f"Failed to post attendance: {att_result.get('error', 'Unknown error')}"
-            ),
-        })
-
-    except Exception as e:
-        logger.exception("Unexpected error in /api/manual-attendance")
-        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/debug/students")

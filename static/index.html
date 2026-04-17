@@ -16,7 +16,6 @@
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3/drawing_utils.js" crossorigin="anonymous"></script>
 
   <style>
-    /* ── Base ─────────────────────────────────────────────────────────────── */
     :root {
       --bg-dark:    #0d1117;
       --bg-card:    #161b22;
@@ -61,6 +60,16 @@
     }
     .app-header h1 { font-size: 17px; font-weight: 600; line-height: 1.2; }
     .app-header p  { font-size: 12px; color: var(--text-muted); }
+    .batch-badge {
+      background: rgba(37,99,235,0.15);
+      border: 1px solid rgba(37,99,235,0.4);
+      color: #93c5fd;
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
 
     /* ── Main Layout ─────────────────────────────────────────────────────── */
     .main {
@@ -89,11 +98,10 @@
       overflow: hidden;
     }
     #video {
-      width: 100%;
-      height: 100%;
+      width: 100%; height: 100%;
       object-fit: cover;
       display: block;
-      transform: scaleX(-1); /* Mirror effect */
+      transform: scaleX(-1);
     }
     #canvas-overlay {
       position: absolute;
@@ -102,8 +110,6 @@
       transform: scaleX(-1);
       pointer-events: none;
     }
-
-    /* Face frame overlay */
     .face-frame {
       position: absolute;
       top: 50%; left: 50%;
@@ -118,10 +124,7 @@
     .face-frame.liveness  { border-color: rgba(217, 119, 6, 0.9); }
     .face-frame.verified  { border-color: rgba(22, 163, 74, 0.9); }
     .face-frame.no-match  { border-color: rgba(220, 38, 38, 0.9); }
-
-    /* Corner accents */
-    .face-frame::before,
-    .face-frame::after {
+    .face-frame::before, .face-frame::after {
       content: '';
       position: absolute;
       width: 30px; height: 30px;
@@ -138,8 +141,6 @@
       border-width: 0 3px 3px 0;
       border-radius: 0 0 8px 0;
     }
-
-    /* Status bar at bottom of camera */
     .camera-status {
       position: absolute;
       bottom: 0; left: 0; right: 0;
@@ -149,7 +150,6 @@
       align-items: center;
       gap: 8px;
       font-size: 13px;
-      transition: all 0.3s;
     }
     .status-dot {
       width: 8px; height: 8px;
@@ -174,15 +174,20 @@
       flex-direction: column;
       gap: 16px;
     }
-
     .step-card {
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 20px;
     }
-    .step-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 16px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
-
+    .step-card h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
     .step {
       display: flex;
       align-items: flex-start;
@@ -209,24 +214,11 @@
     .step-label { font-size: 13px; color: var(--text-muted); line-height: 1.4; }
     .step-label strong { color: var(--text); }
 
-    /* EAR meter */
     .ear-meter-wrap { margin-top: 4px; }
     .ear-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
-    .ear-bar {
-      height: 4px;
-      border-radius: 2px;
-      background: var(--bg-input);
-      overflow: hidden;
-    }
-    .ear-fill {
-      height: 100%;
-      width: 100%;
-      background: var(--accent);
-      border-radius: 2px;
-      transition: width 0.1s, background 0.2s;
-    }
+    .ear-bar   { height: 4px; border-radius: 2px; background: var(--bg-input); overflow: hidden; }
+    .ear-fill  { height: 100%; width: 100%; background: var(--accent); border-radius: 2px; transition: width 0.1s, background 0.2s; }
 
-    /* Blink counter */
     .blink-counter {
       display: inline-flex;
       align-items: center;
@@ -241,6 +233,20 @@
     .blink-count { font-size: 20px; font-weight: 700; color: var(--warning); line-height: 1; }
     .blink-count.complete { color: var(--success); }
 
+    /* Attempt counter */
+    .attempt-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(220,38,38,0.1);
+      border: 1px solid rgba(220,38,38,0.3);
+      color: #f87171;
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
     /* Result card */
     .result-card {
       background: var(--bg-card);
@@ -249,9 +255,10 @@
       padding: 20px;
       display: none;
     }
-    .result-card.show { display: block; }
+    .result-card.show    { display: block; }
     .result-card.success { border-color: var(--success); }
-    .result-card.danger  { border-color: var(--danger);  }
+    .result-card.danger  { border-color: var(--danger); }
+    .result-card.warning { border-color: var(--warning); }
 
     .result-badge {
       display: inline-flex;
@@ -263,8 +270,9 @@
       font-weight: 600;
       margin-bottom: 14px;
     }
-    .result-badge.success { background: rgba(22,163,74,.15); color: #4ade80; }
-    .result-badge.danger  { background: rgba(220,38,38,.15); color: #f87171; }
+    .result-badge.success { background: rgba(22,163,74,.15);  color: #4ade80; }
+    .result-badge.danger  { background: rgba(220,38,38,.15);  color: #f87171; }
+    .result-badge.warning { background: rgba(217,119,6,.15);  color: #fbbf24; }
 
     .student-info { display: flex; flex-direction: column; gap: 8px; }
     .info-row {
@@ -281,21 +289,9 @@
     .info-value.att-ok  { color: #4ade80; }
     .info-value.att-err { color: #f87171; }
 
-    .confidence-bar {
-      height: 6px;
-      background: var(--bg-input);
-      border-radius: 3px;
-      overflow: hidden;
-      margin-top: 4px;
-    }
-    .confidence-fill {
-      height: 100%;
-      background: linear-gradient(90deg, var(--accent), #7c3aed);
-      border-radius: 3px;
-      transition: width 0.6s ease;
-    }
+    .confidence-bar  { height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+    .confidence-fill { height: 100%; background: linear-gradient(90deg, var(--accent), #7c3aed); border-radius: 3px; transition: width 0.6s ease; }
 
-    /* Retry button */
     .btn-retry {
       width: 100%;
       padding: 10px;
@@ -310,79 +306,79 @@
     }
     .btn-retry:hover { background: var(--border); }
 
-    /* Loading spinner */
-    .spinner {
-      display: none;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      padding: 20px;
-      font-size: 13px;
-      color: var(--text-muted);
-    }
+    /* Spinner */
+    .spinner { display: none; align-items: center; justify-content: center; gap: 10px; padding: 20px; font-size: 13px; color: var(--text-muted); }
     .spinner.show { display: flex; }
-    .spin {
-      width: 20px; height: 20px;
-      border: 2px solid var(--border);
-      border-top-color: var(--accent);
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
+    .spin { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Toast notifications */
-    .toast-container {
-      position: fixed;
-      bottom: 24px; right: 24px;
-      z-index: 9999;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .toast-msg {
+    /* ── Manual Fallback Panel ────────────────────────────────────────────── */
+    .manual-panel {
       background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px 16px;
-      font-size: 13px;
-      max-width: 320px;
-      animation: slideIn 0.3s ease;
+      border: 1px solid var(--warning);
+      border-radius: var(--radius);
+      padding: 20px;
+      display: none;
     }
-    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-    /* Camera permission screen */
-    #perm-screen {
-      position: absolute;
-      inset: 0;
+    .manual-panel.show { display: block; }
+    .manual-panel h4 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fbbf24;
+      margin-bottom: 4px;
       display: flex;
-      flex-direction: column;
       align-items: center;
-      justify-content: center;
-      gap: 12px;
-      background: var(--bg-card);
-      z-index: 10;
-      padding: 24px;
-      text-align: center;
+      gap: 6px;
     }
-    #perm-screen i { font-size: 40px; color: var(--text-muted); }
-    #perm-screen p { font-size: 13px; color: var(--text-muted); max-width: 260px; }
-    #btn-allow {
-      padding: 10px 24px;
-      background: var(--accent);
-      color: #fff;
+    .manual-panel p {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
+    .manual-select {
+      width: 100%;
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 13px;
+      margin-bottom: 12px;
+      appearance: none;
+      cursor: pointer;
+    }
+    .manual-select:focus { outline: none; border-color: var(--accent); }
+    .btn-manual-submit {
+      width: 100%;
+      padding: 10px;
+      background: var(--warning);
+      color: #000;
       border: none;
       border-radius: 8px;
-      font-size: 14px;
+      font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
-      transition: background .2s;
+      transition: opacity .2s;
     }
+    .btn-manual-submit:hover    { opacity: .85; }
+    .btn-manual-submit:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* Toast */
+    .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+    .toast-msg { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; font-size: 13px; max-width: 320px; animation: slideIn 0.3s ease; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Permission screen */
+    #perm-screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: var(--bg-card); z-index: 10; padding: 24px; text-align: center; }
+    #perm-screen i { font-size: 40px; color: var(--text-muted); }
+    #perm-screen p { font-size: 13px; color: var(--text-muted); max-width: 260px; }
+    #btn-allow { padding: 10px 24px; background: var(--accent); color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; transition: background .2s; }
     #btn-allow:hover { background: var(--accent-h); }
 
-    /* Responsive */
     @media (max-width: 900px) {
       .main { flex-direction: column; align-items: center; }
       .camera-card { width: 100%; max-width: 500px; }
-      .info-panel { max-width: 500px; width: 100%; }
+      .info-panel  { max-width: 500px; width: 100%; }
     }
   </style>
 </head>
@@ -393,9 +389,13 @@
   <div class="logo"><i class="bi bi-person-badge" style="color:#fff"></i></div>
   <div>
     <h1>Student Face Verification</h1>
-    <p>Zoho Creator · Attendance Module</p>
+    <p id="header-subtitle">Zoho Creator · Attendance Module</p>
   </div>
-  <button id="btn-refresh-cache" onclick="refreshCache()" title="Reload student face database" style="margin-left:auto;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;">
+  <div id="batch-badge-wrap" style="display:none; margin-left:12px;">
+    <span class="batch-badge" id="batch-badge-text"></span>
+  </div>
+  <button id="btn-refresh-cache" onclick="refreshCache()" title="Reload student face database"
+    style="margin-left:auto;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;">
     <i class="bi bi-arrow-clockwise"></i> Refresh Students
   </button>
 </header>
@@ -406,7 +406,6 @@
   <!-- Camera Card -->
   <div class="camera-card">
     <div class="camera-wrap">
-      <!-- Permission prompt -->
       <div id="perm-screen">
         <i class="bi bi-camera-video-off"></i>
         <p>Camera access is required for face verification. Click below to grant access.</p>
@@ -414,15 +413,9 @@
           <i class="bi bi-camera-video me-2"></i>Allow Camera
         </button>
       </div>
-
-      <!-- Video + Canvas -->
       <video id="video" autoplay muted playsinline></video>
       <canvas id="canvas-overlay"></canvas>
-
-      <!-- Face frame guide -->
       <div class="face-frame" id="face-frame"></div>
-
-      <!-- Status bar -->
       <div class="camera-status">
         <span class="status-dot" id="status-dot"></span>
         <span id="status-text">Initialising camera...</span>
@@ -433,7 +426,7 @@
   <!-- Info Panel -->
   <div class="info-panel">
 
-    <!-- Steps card -->
+    <!-- Steps -->
     <div class="step-card">
       <h3><i class="bi bi-list-check me-1"></i> Verification Steps</h3>
 
@@ -471,6 +464,14 @@
         <div class="step-num">4</div>
         <div class="step-label"><strong>Attendance posted</strong> to Zoho Creator</div>
       </div>
+
+      <!-- Attempt counter (shown after first failure) -->
+      <div id="attempt-counter-wrap" style="display:none; padding: 8px 0 4px;">
+        <span class="attempt-badge">
+          <i class="bi bi-exclamation-triangle"></i>
+          <span id="attempt-text">0 / 3 attempts failed</span>
+        </span>
+      </div>
     </div>
 
     <!-- Spinner -->
@@ -488,6 +489,18 @@
       </button>
     </div>
 
+    <!-- Manual Fallback Panel (shown after 3 failed attempts) -->
+    <div class="manual-panel" id="manual-panel">
+      <h4><i class="bi bi-shield-exclamation"></i> Manual Attendance Override</h4>
+      <p>Face recognition failed 3 times. A facilitator can manually mark attendance below.</p>
+      <select class="manual-select" id="manual-student-select">
+        <option value="">— Loading students... —</option>
+      </select>
+      <button class="btn-manual-submit" id="btn-manual-submit" onclick="submitManualAttendance()">
+        <i class="bi bi-check-circle me-1"></i> Mark Present Manually
+      </button>
+    </div>
+
   </div>
 </main>
 
@@ -498,15 +511,20 @@
 <script>
 'use strict';
 
-// ── Config ────────────────────────────────────────────────────────────────────
-const API_BASE         = '';           // Same origin; change to full URL if separate
-const BLINKS_REQUIRED  = 2;           // Number of blinks needed for liveness
-const EAR_CLOSE_THRESH = 0.18;        // EAR below this = eye closed
-const EAR_OPEN_THRESH  = 0.23;        // EAR above this after close = blink complete
-const EAR_SMOOTH_ALPHA = 0.3;         // EMA smoothing factor
+// ── URL Params ────────────────────────────────────────────────────────────────
+const urlParams  = new URLSearchParams(window.location.search);
+const BATCH_ID   = urlParams.get('batch_id')   || '';   // Zoho system record ID of Batch
+const SESSION_ID = urlParams.get('session_id') || '';   // Zoho system record ID of Session
+const BATCH_NAME = urlParams.get('batch_name') || '';   // Human-readable batch name (display only)
 
-// MediaPipe Face Mesh landmarks for EAR calculation
-// Format: [p1_left, p2_top1, p3_top2, p4_right, p5_bot1, p6_bot2]
+// ── Config ────────────────────────────────────────────────────────────────────
+const API_BASE         = '';
+const BLINKS_REQUIRED  = 2;
+const EAR_CLOSE_THRESH = 0.18;
+const EAR_OPEN_THRESH  = 0.23;
+const EAR_SMOOTH_ALPHA = 0.3;
+const MAX_FAIL_BEFORE_MANUAL = 3;
+
 const LEFT_EYE_IDX  = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE_IDX = [33,  160, 158, 133, 153, 144];
 
@@ -520,6 +538,7 @@ let state = {
   blinkVerified: false,
   verifying:     false,
   done:          false,
+  failCount:     0,   // consecutive unrecognised attempts
 };
 
 let videoEl, canvasEl, ctx, faceMeshInstance, cameraInstance;
@@ -538,8 +557,25 @@ const spinnerEl    = document.getElementById('spinner');
 const resultCard   = document.getElementById('result-card');
 const resultBadge  = document.getElementById('result-badge');
 const studentInfo  = document.getElementById('student-info');
+const manualPanel  = document.getElementById('manual-panel');
+const attemptWrap  = document.getElementById('attempt-counter-wrap');
+const attemptText  = document.getElementById('attempt-text');
 
-// ── Camera Initialisation ─────────────────────────────────────────────────────
+// ── Init: apply URL params ────────────────────────────────────────────────────
+(function applyUrlParams() {
+  if (BATCH_NAME || BATCH_ID) {
+    const label = BATCH_NAME || `Batch ${BATCH_ID.slice(-6)}`;
+    document.getElementById('batch-badge-text').textContent = label;
+    document.getElementById('batch-badge-wrap').style.display = 'block';
+    document.getElementById('header-subtitle').textContent =
+      `Zoho Creator · ${label}`;
+  }
+  if (SESSION_ID) {
+    document.title = `Attendance — Session ${SESSION_ID.slice(-6)}`;
+  }
+})();
+
+// ── Camera ────────────────────────────────────────────────────────────────────
 async function startCamera() {
   permScreen.style.display = 'none';
   setStatus('dot', 'Requesting camera access...');
@@ -565,19 +601,17 @@ async function startCamera() {
   }
 }
 
-// ── MediaPipe Face Mesh ───────────────────────────────────────────────────────
+// ── MediaPipe ─────────────────────────────────────────────────────────────────
 function initFaceMesh() {
   faceMeshInstance = new FaceMesh({
     locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/${file}`,
   });
-
   faceMeshInstance.setOptions({
-    maxNumFaces:          1,
-    refineLandmarks:      true,
-    minDetectionConfidence: 0.7,
-    minTrackingConfidence:  0.6,
+    maxNumFaces:             1,
+    refineLandmarks:         true,
+    minDetectionConfidence:  0.7,
+    minTrackingConfidence:   0.6,
   });
-
   faceMeshInstance.onResults(onFaceMeshResults);
 
   cameraInstance = new Camera(videoEl, {
@@ -586,8 +620,7 @@ function initFaceMesh() {
         await faceMeshInstance.send({ image: videoEl });
       }
     },
-    width:  640,
-    height: 480,
+    width: 640, height: 480,
   });
 
   cameraInstance.start().then(() => {
@@ -596,9 +629,8 @@ function initFaceMesh() {
   });
 }
 
-// ── Face Mesh Results Handler ─────────────────────────────────────────────────
+// ── Face Mesh Results ─────────────────────────────────────────────────────────
 function onFaceMeshResults(results) {
-  // Sync canvas size to video
   canvasEl.width  = videoEl.videoWidth  || 640;
   canvasEl.height = videoEl.videoHeight || 480;
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
@@ -606,56 +638,45 @@ function onFaceMeshResults(results) {
   const landmarks = results.multiFaceLandmarks && results.multiFaceLandmarks[0];
 
   if (!landmarks) {
-    // No face
     if (state.faceDetected) {
       state.faceDetected = false;
       setStatus('dot', 'Position your face in the oval');
       setFrameClass('');
-      earWrap.style.display  = 'none';
+      earWrap.style.display   = 'none';
       blinkWrap.style.display = 'none';
     }
     return;
   }
 
-  // Face detected
   if (!state.faceDetected) {
     state.faceDetected = true;
     setStatus('active', 'Face detected — blink to verify liveness');
     setFrameClass('detected');
     activateStep(2);
-    earWrap.style.display  = 'block';
+    earWrap.style.display   = 'block';
     blinkWrap.style.display = 'block';
   }
 
-  // Draw subtle mesh (optional — performance-friendly subset)
   drawSubtleMesh(landmarks, canvasEl.width, canvasEl.height);
 
-  // ── EAR calculation ─────────────────────────────────────────────────────────
-  const w = canvasEl.width;
-  const h = canvasEl.height;
-  const lEAR = computeEAR(landmarks, LEFT_EYE_IDX, w, h);
-  const rEAR = computeEAR(landmarks, RIGHT_EYE_IDX, w, h);
+  const w = canvasEl.width, h = canvasEl.height;
+  const lEAR   = computeEAR(landmarks, LEFT_EYE_IDX,  w, h);
+  const rEAR   = computeEAR(landmarks, RIGHT_EYE_IDX, w, h);
   const avgEAR = (lEAR + rEAR) / 2;
 
-  // Exponential moving average for smooth readings
   state.smoothedEAR = EAR_SMOOTH_ALPHA * avgEAR + (1 - EAR_SMOOTH_ALPHA) * state.smoothedEAR;
 
-  // Update UI meter
   const earPct = Math.min(Math.max(state.smoothedEAR / 0.35, 0), 1) * 100;
   earVal.textContent = state.smoothedEAR.toFixed(3);
   earFill.style.width = earPct + '%';
-  earFill.style.background = state.smoothedEAR < EAR_CLOSE_THRESH
-    ? 'var(--warning)' : 'var(--accent)';
+  earFill.style.background = state.smoothedEAR < EAR_CLOSE_THRESH ? 'var(--warning)' : 'var(--accent)';
 
-  // ── Blink state machine ──────────────────────────────────────────────────────
   if (!state.blinkVerified) {
     if (state.smoothedEAR < EAR_CLOSE_THRESH) {
-      // Eyes closing
       state.eyeWasClosed = true;
       setFrameClass('liveness');
       setStatus('blink', 'Blink detected — keep going...');
     } else if (state.smoothedEAR > EAR_OPEN_THRESH && state.eyeWasClosed) {
-      // Eyes re-opened = one blink complete
       state.eyeWasClosed = false;
       state.blinkCount++;
       blinkCountEl.textContent = state.blinkCount;
@@ -668,51 +689,31 @@ function onFaceMeshResults(results) {
         activateStep(3);
         captureAndVerify();
       } else {
-        const remaining = BLINKS_REQUIRED - state.blinkCount;
-        setStatus('blink', `Good! Blink ${remaining} more time${remaining > 1 ? 's' : ''}...`);
+        const rem = BLINKS_REQUIRED - state.blinkCount;
+        setStatus('blink', `Good! Blink ${rem} more time${rem > 1 ? 's' : ''}...`);
       }
     }
   }
 }
 
-// ── Compute Eye Aspect Ratio ──────────────────────────────────────────────────
+// ── EAR & Drawing ─────────────────────────────────────────────────────────────
 function computeEAR(landmarks, indices, w, h) {
-  const pt = (i) => ({
-    x: landmarks[i].x * w,
-    y: landmarks[i].y * h,
-  });
-
+  const pt = (i) => ({ x: landmarks[i].x * w, y: landmarks[i].y * h });
   const [p1, p2, p3, p4, p5, p6] = indices.map(pt);
-
-  const v1 = dist(p2, p6);
-  const v2 = dist(p3, p5);
-  const ho = dist(p1, p4);
-
-  return (v1 + v2) / (2.0 * ho);
+  return (dist(p2, p6) + dist(p3, p5)) / (2.0 * dist(p1, p4));
 }
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
-function dist(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-// ── Draw subtle mesh (eye + face contours only) ───────────────────────────────
 function drawSubtleMesh(landmarks, w, h) {
-  const eyeColor = 'rgba(37, 99, 235, 0.4)';
+  const eyeColor     = 'rgba(37, 99, 235, 0.4)';
   const contourColor = 'rgba(255,255,255,0.08)';
-
-  // Face oval
   const FACE_OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
+  const L_EYE     = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
+  const R_EYE     = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
   drawPath(landmarks, FACE_OVAL, w, h, contourColor, 1, true);
-
-  // Left eye
-  const L_EYE = [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398];
-  drawPath(landmarks, L_EYE, w, h, eyeColor, 1.5, true);
-
-  // Right eye
-  const R_EYE = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
-  drawPath(landmarks, R_EYE, w, h, eyeColor, 1.5, true);
+  drawPath(landmarks, L_EYE,     w, h, eyeColor,     1.5, true);
+  drawPath(landmarks, R_EYE,     w, h, eyeColor,     1.5, true);
 }
-
 function drawPath(landmarks, indices, w, h, color, lineWidth, close) {
   if (!indices.length) return;
   ctx.beginPath();
@@ -721,8 +722,7 @@ function drawPath(landmarks, indices, w, h, color, lineWidth, close) {
   const first = landmarks[indices[0]];
   ctx.moveTo(first.x * w, first.y * h);
   for (let i = 1; i < indices.length; i++) {
-    const lm = landmarks[indices[i]];
-    ctx.lineTo(lm.x * w, lm.y * h);
+    ctx.lineTo(landmarks[indices[i]].x * w, landmarks[indices[i]].y * h);
   }
   if (close) ctx.closePath();
   ctx.stroke();
@@ -732,26 +732,30 @@ function drawPath(landmarks, indices, w, h, color, lineWidth, close) {
 async function captureAndVerify() {
   state.verifying = true;
 
-  // Capture current video frame as base64 JPEG
   const captureCanvas = document.createElement('canvas');
   captureCanvas.width  = videoEl.videoWidth;
   captureCanvas.height = videoEl.videoHeight;
   const cCtx = captureCanvas.getContext('2d');
-  // Draw mirrored frame (flip back for correct face orientation for recognition)
   cCtx.translate(captureCanvas.width, 0);
   cCtx.scale(-1, 1);
   cCtx.drawImage(videoEl, 0, 0);
   const imageData = captureCanvas.toDataURL('image/jpeg', 0.92);
 
-  // Show spinner, hide result
   spinnerEl.classList.add('show');
-  resultCard.classList.remove('show', 'success', 'danger');
+  resultCard.classList.remove('show', 'success', 'danger', 'warning');
 
   try {
+    const body = {
+      image:          imageData,
+      blink_verified: true,
+    };
+    if (BATCH_ID)   body.batch_id   = BATCH_ID;
+    if (SESSION_ID) body.session_id = SESSION_ID;
+
     const resp = await fetch(`${API_BASE}/api/verify`, {
-      method: 'POST',
+      method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: imageData, blink_verified: true }),
+      body:    JSON.stringify(body),
     });
 
     const data = await resp.json();
@@ -759,14 +763,20 @@ async function captureAndVerify() {
 
     if (!resp.ok) {
       showError(data.error || 'Verification failed.');
-      resetForRetry();
+      onFailedAttempt();
+      return;
+    }
+
+    if (data.matched && data.duplicate) {
+      showDuplicate(data);
       return;
     }
 
     if (data.matched) {
+      state.failCount = 0;   // reset on success
+      updateAttemptCounter();
       activateStep(4);
       showSuccess(data);
-      // Mark all 4 steps green after attendance posted
       setTimeout(() => {
         for (let i = 1; i <= 4; i++) {
           const el = document.getElementById(`step-${i}`);
@@ -775,14 +785,116 @@ async function captureAndVerify() {
         }
       }, 600);
     } else {
+      onFailedAttempt();
       showNoMatch(data.message);
-      resetForRetry();
     }
 
   } catch (err) {
     spinnerEl.classList.remove('show');
     showError(`Network error: ${err.message}`);
+    onFailedAttempt();
+  }
+}
+
+// ── Failed Attempt Tracking ───────────────────────────────────────────────────
+function onFailedAttempt() {
+  state.failCount++;
+  updateAttemptCounter();
+  if (state.failCount >= MAX_FAIL_BEFORE_MANUAL) {
+    showManualFallback();
+  } else {
     resetForRetry();
+  }
+}
+
+function updateAttemptCounter() {
+  if (state.failCount === 0) {
+    attemptWrap.style.display = 'none';
+    return;
+  }
+  attemptWrap.style.display = 'block';
+  attemptText.textContent = `${state.failCount} / ${MAX_FAIL_BEFORE_MANUAL} attempts failed`;
+}
+
+// ── Manual Fallback ───────────────────────────────────────────────────────────
+async function showManualFallback() {
+  manualPanel.classList.add('show');
+  toast('Face recognition failed 3 times — manual override available', 'danger');
+
+  // Load student list for dropdown
+  const select = document.getElementById('manual-student-select');
+  select.innerHTML = '<option value="">Loading students...</option>';
+
+  try {
+    const url = BATCH_ID
+      ? `${API_BASE}/api/students/list?batch_id=${encodeURIComponent(BATCH_ID)}`
+      : `${API_BASE}/api/students/list`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+
+    if (data.success && data.students.length) {
+      select.innerHTML = '<option value="">— Select student —</option>'
+        + data.students
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map(s => `<option value="${esc(s.id)}" data-name="${esc(s.name)}">${esc(s.name)}${s.student_number ? ` (${esc(s.student_number)})` : ''}</option>`)
+            .join('');
+    } else {
+      select.innerHTML = '<option value="">No students found</option>';
+    }
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load — retry</option>';
+  }
+}
+
+async function submitManualAttendance() {
+  const select = document.getElementById('manual-student-select');
+  const btn    = document.getElementById('btn-manual-submit');
+
+  if (!select.value) {
+    toast('Please select a student first.', 'danger');
+    return;
+  }
+
+  const studentId   = select.value;
+  const studentName = select.options[select.selectedIndex].dataset.name || 'Unknown';
+
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i> Posting...';
+
+  try {
+    const body = { student_id: studentId, student_name: studentName, reason: 'face_recognition_failed' };
+    if (SESSION_ID) body.session_id = SESSION_ID;
+
+    const resp = await fetch(`${API_BASE}/api/manual-attendance`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    const data = await resp.json();
+
+    if (data.duplicate) {
+      toast(`${studentName} is already marked present today.`, 'warning');
+    } else if (data.attendance_posted) {
+      toast(`✓ Manual attendance posted for ${studentName}`, 'success');
+      manualPanel.classList.remove('show');
+      // Show a success result card
+      resultBadge.className = 'result-badge warning';
+      resultBadge.innerHTML = `<i class="bi bi-person-check-fill"></i> Manual Override`;
+      studentInfo.innerHTML = `
+        <div class="info-row"><span class="info-key">Name</span><span class="info-value">${esc(studentName)}</span></div>
+        <div class="info-row"><span class="info-key">Attendance</span><span class="info-value att-ok"><i class="bi bi-check-circle me-1"></i>Marked Present</span></div>
+        <div class="info-row"><span class="info-key">Method</span><span class="info-value">Facilitator Override</span></div>
+      `;
+      resultCard.classList.add('show', 'warning');
+      state.done = true;
+    } else {
+      toast(`Failed: ${data.message}`, 'danger');
+    }
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'danger');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-check-circle me-1"></i> Mark Present Manually';
   }
 }
 
@@ -794,19 +906,19 @@ function showSuccess(data) {
   resultBadge.className = 'result-badge success';
   resultBadge.innerHTML = `<i class="bi bi-check-circle-fill"></i> Identity Verified`;
 
-  const confPct = data.confidence || 0;
+  const confPct   = data.confidence || 0;
   const attStatus = data.attendance_posted
     ? `<span class="info-value att-ok"><i class="bi bi-check-circle me-1"></i>Marked Present</span>`
     : `<span class="info-value att-err"><i class="bi bi-exclamation-triangle me-1"></i>Failed to post</span>`;
 
   studentInfo.innerHTML = `
     <div class="info-row"><span class="info-key">Name</span><span class="info-value">${esc(s.name)}</span></div>
-    ${s.roll_number ? `<div class="info-row"><span class="info-key">Roll No.</span><span class="info-value">${esc(s.roll_number)}</span></div>` : ''}
-    ${s.class ? `<div class="info-row"><span class="info-key">Class</span><span class="info-value">${esc(s.class)}</span></div>` : ''}
+    ${s.roll_number ? `<div class="info-row"><span class="info-key">Student ID</span><span class="info-value">${esc(s.roll_number)}</span></div>` : ''}
     <div class="info-row"><span class="info-key">Confidence</span><span class="info-value">${confPct}%</span></div>
     <div class="confidence-bar"><div class="confidence-fill" style="width:${confPct}%"></div></div>
     <div class="info-row"><span class="info-key">Attendance</span>${attStatus}</div>
     <div class="info-row"><span class="info-key">Verified via</span><span class="info-value">Face + Eye Blink</span></div>
+    ${SESSION_ID ? `<div class="info-row"><span class="info-key">Session</span><span class="info-value">${SESSION_ID.slice(-6)}</span></div>` : ''}
   `;
 
   resultCard.classList.add('show', 'success');
@@ -815,18 +927,33 @@ function showSuccess(data) {
   toast(`✓ ${s.name} — attendance posted`, 'success');
 }
 
+function showDuplicate(data) {
+  const s = data.student;
+  resultBadge.className = 'result-badge warning';
+  resultBadge.innerHTML = `<i class="bi bi-exclamation-circle-fill"></i> Already Marked`;
+  studentInfo.innerHTML = `
+    <div class="info-row"><span class="info-key">Name</span><span class="info-value">${esc(s.name)}</span></div>
+    <div class="info-row"><span class="info-key">Status</span><span class="info-value" style="color:var(--warning)">Already marked present today</span></div>
+  `;
+  resultCard.classList.add('show', 'warning');
+  setFrameClass('verified');
+  setStatus('success', `${s.name} already marked present today.`);
+  toast(`${s.name} already marked present`, 'warning');
+  setTimeout(() => resetVerification(), 4000);
+}
+
 function showNoMatch(message) {
   resultBadge.className = 'result-badge danger';
   resultBadge.innerHTML = `<i class="bi bi-x-circle-fill"></i> Not Recognised`;
-
   studentInfo.innerHTML = `
     <div class="info-row">
       <span class="info-key">Result</span>
       <span class="info-value" style="color:var(--danger)">${esc(message || 'Face not found in database.')}</span>
     </div>
-    <div class="info-row"><span class="info-key">Action</span><span class="info-value">Please try again or contact admin.</span></div>
+    <div class="info-row"><span class="info-key">Action</span>
+      <span class="info-value">${state.failCount >= MAX_FAIL_BEFORE_MANUAL ? 'Use manual override below ↓' : 'Please try again'}</span>
+    </div>
   `;
-
   resultCard.classList.add('show', 'danger');
   setFrameClass('no-match');
   setStatus('error', 'Face not recognised');
@@ -841,13 +968,14 @@ function showError(msg) {
 // ── Reset ─────────────────────────────────────────────────────────────────────
 function resetForRetry() {
   setTimeout(() => {
-    state.verifying = false;
+    state.verifying    = false;
     state.blinkVerified = false;
-    state.blinkCount = 0;
+    state.blinkCount   = 0;
     state.eyeWasClosed = false;
-    state.smoothedEAR = 0.3;
+    state.smoothedEAR  = 0.3;
     blinkCountEl.textContent = '0';
     blinkCountEl.classList.remove('complete');
+    resultCard.classList.remove('show', 'success', 'danger', 'warning');
     setStatus('active', 'Position your face in the oval');
     setFrameClass('');
     activateStep(1);
@@ -855,8 +983,11 @@ function resetForRetry() {
 }
 
 function resetVerification() {
-  state.done = false;
-  resultCard.classList.remove('show', 'success', 'danger');
+  state.done      = false;
+  state.failCount = 0;
+  manualPanel.classList.remove('show');
+  attemptWrap.style.display = 'none';
+  resultCard.classList.remove('show', 'success', 'danger', 'warning');
   resetForRetry();
 }
 
@@ -864,16 +995,14 @@ function resetVerification() {
 function setStatus(type, text) {
   statusText.textContent = text;
   statusDot.className = 'status-dot';
-  if (type === 'active')   statusDot.classList.add('active');
-  if (type === 'blink')    statusDot.classList.add('blink');
-  if (type === 'success')  statusDot.classList.add('success');
-  if (type === 'error')    statusDot.classList.add('error');
+  if (type === 'active')  statusDot.classList.add('active');
+  if (type === 'blink')   statusDot.classList.add('blink');
+  if (type === 'success') statusDot.classList.add('success');
+  if (type === 'error')   statusDot.classList.add('error');
 }
-
 function setFrameClass(cls) {
   faceFrame.className = 'face-frame' + (cls ? ` ${cls}` : '');
 }
-
 function activateStep(n) {
   for (let i = 1; i <= 4; i++) {
     const el = document.getElementById(`step-${i}`);
@@ -882,18 +1011,15 @@ function activateStep(n) {
     if (i === n) el.classList.add('active');
   }
 }
-
 function esc(str) {
   const d = document.createElement('div');
   d.appendChild(document.createTextNode(str || ''));
   return d.innerHTML;
 }
-
 function toast(msg, type = 'info') {
-  const colors = { success: 'var(--success)', danger: 'var(--danger)', info: 'var(--accent)' };
+  const colors = { success: 'var(--success)', danger: 'var(--danger)', warning: 'var(--warning)', info: 'var(--accent)' };
   const el = document.createElement('div');
   el.className = 'toast-msg';
-  el.style.borderLeftColor = colors[type] || colors.info;
   el.style.borderLeft = `3px solid ${colors[type] || colors.info}`;
   el.textContent = msg;
   document.getElementById('toast-container').appendChild(el);
@@ -906,7 +1032,10 @@ async function refreshCache() {
   btn.disabled = true;
   btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Refreshing...';
   try {
-    const resp = await fetch(`${API_BASE}/api/cache/refresh`, { method: 'POST' });
+    const url = BATCH_ID
+      ? `${API_BASE}/api/cache/refresh?batch_id=${encodeURIComponent(BATCH_ID)}`
+      : `${API_BASE}/api/cache/refresh`;
+    const resp = await fetch(url, { method: 'POST' });
     const data = await resp.json();
     if (data.success) {
       toast(`✓ Student database refreshed — ${data.students_loaded} students loaded`, 'success');
@@ -921,24 +1050,17 @@ async function refreshCache() {
   }
 }
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-// Auto-start if browser supports getUserMedia
+// ── Auto-start ────────────────────────────────────────────────────────────────
 (async function init() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    permScreen.querySelector('p').textContent = 'Your browser does not support camera access. Please use Chrome or Edge.';
+    permScreen.querySelector('p').textContent =
+      'Your browser does not support camera access. Please use Chrome or Edge.';
     return;
   }
-
-  // Check if already have permission
   try {
     const perm = await navigator.permissions.query({ name: 'camera' });
-    if (perm.state === 'granted') {
-      startCamera();
-    }
-    // else: wait for user to click Allow button
-  } catch (_) {
-    // permissions API not supported — wait for button click
-  }
+    if (perm.state === 'granted') startCamera();
+  } catch (_) { /* wait for button click */ }
 })();
 </script>
 </body>

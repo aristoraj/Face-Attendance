@@ -16,6 +16,7 @@ Similarity thresholds for buffalo_sc:
 """
 
 import io
+import json
 import time
 import base64
 import logging
@@ -156,3 +157,19 @@ def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: 
         return students[best_idx], confidence
 
     return None, 0.0
+
+
+# ── Embedding serialisation ───────────────────────────────────────────────────
+
+def embedding_to_json(embedding: np.ndarray) -> str:
+    """Serialise a 512-d numpy embedding to a compact JSON string for storage."""
+    return json.dumps([round(float(v), 6) for v in embedding])
+
+
+def json_to_embedding(json_str: str) -> np.ndarray:
+    """Deserialise a JSON string back to a normalised numpy embedding."""
+    arr = np.array(json.loads(json_str), dtype=np.float32)
+    norm = np.linalg.norm(arr)
+    if norm > 0:
+        arr = arr / norm   # re-normalise in case of float rounding
+    return arr

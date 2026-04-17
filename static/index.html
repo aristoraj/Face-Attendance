@@ -395,6 +395,9 @@
     <h1>Student Face Verification</h1>
     <p>Zoho Creator · Attendance Module</p>
   </div>
+  <button id="btn-refresh-cache" onclick="refreshCache()" title="Reload student face database" style="margin-left:auto;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;">
+    <i class="bi bi-arrow-clockwise"></i> Refresh Students
+  </button>
 </header>
 
 <!-- ── Main ───────────────────────────────────────────────────────────────── -->
@@ -895,6 +898,27 @@ function toast(msg, type = 'info') {
   el.textContent = msg;
   document.getElementById('toast-container').appendChild(el);
   setTimeout(() => el.remove(), 5000);
+}
+
+// ── Cache Refresh ─────────────────────────────────────────────────────────────
+async function refreshCache() {
+  const btn = document.getElementById('btn-refresh-cache');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Refreshing...';
+  try {
+    const resp = await fetch(`${API_BASE}/api/cache/refresh`, { method: 'POST' });
+    const data = await resp.json();
+    if (data.success) {
+      toast(`✓ Student database refreshed — ${data.students_loaded} students loaded`, 'success');
+    } else {
+      toast(`Cache refresh failed: ${data.error || 'Unknown error'}`, 'danger');
+    }
+  } catch (e) {
+    toast(`Refresh failed: ${e.message}`, 'danger');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Refresh Students';
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

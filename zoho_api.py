@@ -12,6 +12,7 @@ Changes:
 """
 
 import logging
+import os
 import requests
 from datetime import datetime
 
@@ -49,7 +50,8 @@ class ZohoCreatorAPI:
         resp = requests.post(
             self._token_url,
             params={
-                "refresh_token": ZOHO_REFRESH_TOKEN,
+                # Read from os.environ every time so hot-reload via /admin/reauth works instantly
+                "refresh_token": os.environ.get("ZOHO_REFRESH_TOKEN", ZOHO_REFRESH_TOKEN),
                 "client_id":     ZOHO_CLIENT_ID,
                 "client_secret": ZOHO_CLIENT_SECRET,
                 "grant_type":    "refresh_token",

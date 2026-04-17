@@ -42,7 +42,7 @@ FIELD_STUDENT_PHOTO  = os.environ.get("FIELD_STUDENT_PHOTO", "Photo")
 # Student_ID is a LOOKUP field — Zoho Creator v2 expects the display value of the
 # referenced record (e.g. "1001"), not a nested {"ID": "..."} object
 FIELD_ATT_STUDENT  = os.environ.get("FIELD_ATT_STUDENT", "Student_ID")  # lookup field link name
-FIELD_ATT_DATE     = os.environ.get("FIELD_ATT_DATE", "Date")
+FIELD_ATT_DATE     = os.environ.get("FIELD_ATT_DATE", "Date_field")
 FIELD_ATT_STATUS   = os.environ.get("FIELD_ATT_STATUS", "Attendance")   # dropdown field
 
 # ─── Face Recognition Settings ────────────────────────────────────────────────

@@ -58,3 +58,13 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "change-this-secret-key-in-production"
 # Self URL for the always-on keepalive ping (set to your Render URL)
 # e.g. https://face-attendance-3wel.onrender.com
 SELF_URL = os.environ.get("SELF_URL", "")
+
+# ─── Render API (for auto-updating ZOHO_REFRESH_TOKEN) ────────────────────────
+# Get your API key: Render dashboard → Account Settings → API Keys → Create API Key
+# Get your Service ID: Render dashboard → your service → Settings → Service ID (srv-xxxxx)
+RENDER_API_KEY    = os.environ.get("RENDER_API_KEY", "")
+RENDER_SERVICE_ID = os.environ.get("RENDER_SERVICE_ID", "")
+
+# Secret passcode to protect the /admin/reauth page from public access
+# Set this to any random string in your Render environment variables
+ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "train-admin-2026")

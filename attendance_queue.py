@@ -134,12 +134,12 @@ class AttendanceQueue:
         logger.info(f"Attendance queue DB at: {DB_PATH}")
 
     def _rebuild_dedup_from_db(self):
-        """Populate in-memory dedup from today's PENDING/POSTED rows on startup."""
+        """Populate in-memory dedup from today's active rows on startup."""
         today = datetime.now().strftime("%d-%b-%Y")
         with self._db() as conn:
             rows = conn.execute(
                 "SELECT student_id, session_id FROM attendance_queue "
-                "WHERE date_str=? AND status IN ('PENDING','POSTED')",
+                "WHERE date_str=? AND status IN ('PENDING','PROCESSING','POSTED')",
                 (today,),
             ).fetchall()
         with self._lock:
@@ -176,13 +176,14 @@ class AttendanceQueue:
                 count = conn.execute(
                     "SELECT COUNT(*) FROM attendance_queue "
                     "WHERE student_id=? AND date_str=? AND session_id=? "
-                    "AND status IN ('PENDING','POSTED')",
+                    "AND status IN ('PENDING','PROCESSING','POSTED')",
                     (student_id, date_str, sid),
                 ).fetchone()[0]
             else:
                 count = conn.execute(
                     "SELECT COUNT(*) FROM attendance_queue "
-                    "WHERE student_id=? AND date_str=? AND status IN ('PENDING','POSTED')",
+                    "WHERE student_id=? AND date_str=? "
+                    "AND status IN ('PENDING','PROCESSING','POSTED')",
                     (student_id, date_str),
                 ).fetchone()[0]
 
@@ -299,6 +300,18 @@ class AttendanceQueue:
 
     def _drain(self):
         now_iso = datetime.now().isoformat()
+
+        # Reset records stuck in PROCESSING (happens if a worker crashed mid-flight)
+        stale_iso = (datetime.now() - timedelta(minutes=5)).isoformat()
+        with self._db() as conn:
+            conn.execute(
+                "UPDATE attendance_queue "
+                "SET status='PENDING', next_retry_at=?, updated_at=? "
+                "WHERE status='PROCESSING' AND updated_at < ?",
+                (now_iso, now_iso, stale_iso),
+            )
+
+        # Find candidate PENDING rows
         with self._db() as conn:
             rows = conn.execute(
                 "SELECT id, student_id, student_name, date_str, session_id, attempts "
@@ -309,7 +322,20 @@ class AttendanceQueue:
             ).fetchall()
 
         for row in rows:
-            rec_id     = row["id"]
+            rec_id = row["id"]
+
+            # Atomically claim this record by flipping PENDING → PROCESSING.
+            # SQLite serialises the UPDATE, so only one of the 4 Gunicorn workers
+            # will see rowcount=1; the others get 0 and skip it — no duplicates.
+            with self._db() as conn:
+                cursor = conn.execute(
+                    "UPDATE attendance_queue SET status='PROCESSING', updated_at=? "
+                    "WHERE id=? AND status='PENDING'",
+                    (now_iso, rec_id),
+                )
+            if cursor.rowcount == 0:
+                continue   # another worker already claimed this record
+
             name       = row["student_name"]
             student_id = row["student_id"]
             session_id = row["session_id"] or None
@@ -335,7 +361,8 @@ class AttendanceQueue:
         now = datetime.now().isoformat()
         with self._db() as conn:
             conn.execute(
-                "UPDATE attendance_queue SET status='POSTED', updated_at=? WHERE id=?",
+                "UPDATE attendance_queue SET status='POSTED', updated_at=? "
+                "WHERE id=? AND status='PROCESSING'",
                 (now, rec_id),
             )
 
@@ -347,7 +374,7 @@ class AttendanceQueue:
                 conn.execute(
                     "UPDATE attendance_queue "
                     "SET status='FAILED', attempts=?, last_error=?, updated_at=? "
-                    "WHERE id=?",
+                    "WHERE id=? AND status='PROCESSING'",
                     (new_attempts, error[:500], now, rec_id),
                 )
             logger.error(
@@ -360,8 +387,9 @@ class AttendanceQueue:
             with self._db() as conn:
                 conn.execute(
                     "UPDATE attendance_queue "
-                    "SET attempts=?, last_error=?, updated_at=?, next_retry_at=? "
-                    "WHERE id=?",
+                    "SET status='PENDING', attempts=?, last_error=?, "
+                    "    updated_at=?, next_retry_at=? "
+                    "WHERE id=? AND status='PROCESSING'",
                     (new_attempts, error[:500], now, next_retry, rec_id),
                 )
             logger.warning(

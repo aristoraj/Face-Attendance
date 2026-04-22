@@ -13,6 +13,7 @@ Changes:
 
 import logging
 import os
+import time
 import requests
 from datetime import datetime
 
@@ -37,6 +38,7 @@ class ZohoCreatorAPI:
 
     def __init__(self):
         self._access_token = None
+        self._token_expiry = 0.0   # Unix timestamp; 0 means "not yet fetched"
         self._base_url = self.BASE_URL_TEMPLATE.format(
             dc=ZOHO_DATA_CENTER,
             owner=ZOHO_ACCOUNT_OWNER,
@@ -47,6 +49,7 @@ class ZohoCreatorAPI:
     # ─── Auth ──────────────────────────────────────────────────────────────────
 
     def _refresh_token(self) -> str:
+        """Exchange the refresh token for a new access token. Stores expiry."""
         resp = requests.post(
             self._token_url,
             params={
@@ -63,10 +66,30 @@ class ZohoCreatorAPI:
         if "access_token" not in data:
             raise RuntimeError(f"Token refresh failed: {data}")
         self._access_token = data["access_token"]
+        # Refresh 90 s before actual expiry to cover clock skew and request latency
+        self._token_expiry = time.time() + data.get("expires_in", 3600) - 90
+        logger.info("Zoho access token refreshed (valid for ~%.0f min).",
+                    (self._token_expiry - time.time()) / 60)
         return self._access_token
 
+    def _get_token(self) -> str:
+        """
+        Return a valid access token, calling Zoho's OAuth endpoint only when
+        the cached token is missing or within 90 s of expiry.
+
+        This is the critical fix for the rate-limit error:
+          "You have made too many requests continuously."
+        Previously _headers() called _refresh_token() on every single API
+        request, which fires dozens of token refreshes while loading the student
+        cache (one per photo download). Zoho allows ~10 token requests per
+        minute per client — loading 18 students exceeded that instantly.
+        """
+        if self._access_token and time.time() < self._token_expiry:
+            return self._access_token
+        return self._refresh_token()
+
     def _headers(self) -> dict:
-        token = self._refresh_token()
+        token = self._get_token()   # cached — only calls Zoho when token expires
         return {
             "Authorization": f"Zoho-oauthtoken {token}",
             "Content-Type":  "application/json",

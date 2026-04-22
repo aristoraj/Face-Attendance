@@ -43,7 +43,7 @@ print('InsightFace buffalo_sc model ready.')"
 # the app still starts; check_liveness() returns (True, 1.0, "model_unavailable").
 RUN mkdir -p /app/.anti_spoof && \
     curl -fsSL --retry 3 --retry-delay 3 --max-time 60 \
-      "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/raw/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.onnx" \
+      "https://github.com/yakhyo/face-anti-spoofing/releases/download/weights/MiniFASNetV2.onnx" \
       -o /app/.anti_spoof/MiniFASNetV2.onnx \
     && echo "MiniFASNet liveness model ready ($(wc -c < /app/.anti_spoof/MiniFASNetV2.onnx) bytes)" \
     || echo "WARNING: liveness model download failed — passive anti-spoofing disabled at runtime"

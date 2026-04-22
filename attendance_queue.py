@@ -62,9 +62,9 @@ class AttendanceQueue:
 
     @contextmanager
     def _db(self):
+        """Open a DB connection. WAL mode is set once at init, not here."""
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")   # safe concurrent multi-process writes
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
         conn.row_factory = sqlite3.Row
         try:
             yield conn
@@ -75,7 +75,38 @@ class AttendanceQueue:
         finally:
             conn.close()
 
+    def _set_wal_mode(self):
+        """
+        Enable WAL journal mode for safe multi-process concurrent writes.
+        WAL is persistent in the DB file — only needs to be set once ever.
+        PRAGMA journal_mode=WAL requires an exclusive lock; all 4 Gunicorn
+        workers race to set it at startup, so we retry with backoff instead
+        of crashing.
+        """
+        for attempt in range(20):
+            conn = None
+            try:
+                conn = sqlite3.connect(DB_PATH, timeout=2)
+                row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+                conn.close()
+                if row and row[0] == "wal":
+                    return   # already set — done
+                break        # set to something else but no error — move on
+            except sqlite3.OperationalError:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                time.sleep(0.15 * (attempt + 1))   # 0.15s, 0.30s … up to ~3s total
+        else:
+            logger.warning(
+                "Could not set WAL journal mode after retries — "
+                "falling back to default mode (safe, slightly less concurrent)."
+            )
+
     def _init_db(self):
+        self._set_wal_mode()
         with self._db() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS attendance_queue (

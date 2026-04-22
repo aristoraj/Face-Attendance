@@ -3,20 +3,23 @@ Zoho Creator Face Recognition Attendance Module
 Flask backend — serves the webcam UI and handles face verification.
 
 Endpoints:
-  GET  /                    → Serve the webcam frontend
-  GET  /api/health          → Health check (also used by keepalive ping)
-  GET  /api/cache/status    → Cache status info
-  POST /api/cache/refresh   → Force refresh student face cache
-  POST /api/verify          → Verify face + post attendance
-  GET  /admin/reauth        → Admin page: paste Zoho auth code → auto-updates Render env var
-  POST /admin/reauth        → Exchanges auth code, saves new refresh token to Render
-  GET  /api/debug/students  → Debug raw Zoho records
+  GET  /                       → Serve the webcam frontend
+  GET  /api/health             → Health check (also used by keepalive ping)
+  GET  /api/cache/status       → Cache status info
+  POST /api/cache/refresh      → Force refresh student face cache
+  POST /api/verify             → Verify face + queue attendance
+  GET  /admin/sync-status      → Queue health: pending / posted / failed counts
+  POST /admin/retry-failed     → Reset FAILED queue records to PENDING
+  GET  /admin/reauth           → Admin page: paste Zoho auth code → auto-updates Render env var
+  POST /admin/reauth           → Exchanges auth code, saves new refresh token to Render
+  GET  /api/debug/students     → Debug raw Zoho records
 """
 
 import logging
 import os
 import threading
 import time
+from datetime import datetime
 
 import requests as req
 from flask import Flask, jsonify, request, send_from_directory, make_response
@@ -28,8 +31,13 @@ from config import (
     RENDER_API_KEY, RENDER_SERVICE_ID, ADMIN_SECRET,
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_DATA_CENTER,
 )
-from face_utils import FaceCache, decode_base64_image, encode_face_from_array, find_best_match
+from face_utils import (
+    FaceCache, decode_base64_image,
+    encode_face_with_bbox, find_best_match,
+)
+from liveness_utils import check_liveness
 from zoho_api import ZohoCreatorAPI
+from attendance_queue import AttendanceQueue
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -44,10 +52,9 @@ app.secret_key = SECRET_KEY
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 zoho = ZohoCreatorAPI()
+att_queue = AttendanceQueue(zoho)
 
 # ─── Per-batch face cache ──────────────────────────────────────────────────────
-# Key: batch_id string (or "ALL" for no batch filter).
-# Each batch gets its own FaceCache so refreshes are scoped.
 _batch_caches: dict[str, FaceCache] = {}
 _batch_caches_lock = threading.Lock()
 
@@ -75,19 +82,14 @@ def get_students_cached(batch_id: str = None) -> list:
 
 # ─── Always-on keepalive (Render free tier) ───────────────────────────────────
 def _keepalive_worker():
-    """
-    Ping our own /api/health every 14 minutes so Render's free tier doesn't
-    spin down the instance. Set SELF_URL env var to activate.
-    """
+    """Ping /api/health every 14 min to prevent Render free tier from spinning down."""
     if not SELF_URL:
-        logger.info("SELF_URL not set — keepalive disabled (set it to your Render URL)")
+        logger.info("SELF_URL not set — keepalive disabled.")
         return
-
     ping_url = SELF_URL.rstrip("/") + "/api/health"
     logger.info(f"Keepalive started — pinging {ping_url} every 14 min")
-
     while True:
-        time.sleep(14 * 60)   # 14 minutes
+        time.sleep(14 * 60)
         try:
             r = req.get(ping_url, timeout=10)
             logger.info(f"Keepalive ping → HTTP {r.status_code}")
@@ -109,12 +111,18 @@ def index():
 @app.route("/api/health")
 def health():
     total_cached = sum(c.size for c in _batch_caches.values())
+    queue_status = att_queue.get_status_summary()
     return jsonify({
         "status":           "ok",
-        "version":          "2.0.0",
+        "version":          "3.0.0",
         "total_cached":     total_cached,
         "batch_scopes":     list(_batch_caches.keys()),
         "keepalive_active": bool(SELF_URL),
+        "queue": {
+            "pending": queue_status["pending"],
+            "posted":  queue_status["posted"],
+            "failed":  queue_status["failed"],
+        },
     })
 
 
@@ -155,19 +163,29 @@ def cache_refresh():
         return jsonify({"success": False, "error": hint}), 500
 
 
+# ─── Main verify endpoint ─────────────────────────────────────────────────────
 
 @app.route("/api/verify", methods=["POST"])
 def verify():
     """
     Verify a captured photo against the student database.
 
-    Expected JSON body:
+    Request JSON:
     {
-        "image":          "<base64 JPEG, with or without data URI prefix>",
+        "image":          "<base64 JPEG>",
         "blink_verified": true,
-        "batch_id":       "4445260000003610007",  ← optional, scopes recognition
-        "session_id":     "4445260000003999001"   ← optional, links attendance to session
+        "batch_id":       "...",   ← optional
+        "session_id":     "..."    ← optional
     }
+
+    Performance path (all hot-path Zoho API calls eliminated):
+      1. Decode image
+      2. InsightFace: detect face + extract 512-d embedding + bounding box
+      3. MiniFASNet: passive liveness check (rejects video/screen attacks)
+      4. Match against cached student embeddings (numpy dot, ~0.5ms)
+      5. Dedup: in-memory set O(1) → SQLite fallback (~0.5ms)
+      6. Enqueue to SQLite (~1ms) → return success immediately
+      7. Background worker syncs to Zoho asynchronously
     """
     try:
         data = request.get_json(force=True)
@@ -185,13 +203,14 @@ def verify():
         batch_id   = data.get("batch_id")   or None
         session_id = data.get("session_id") or None
 
-        # ── Decode and encode submitted face ──────────────────────────────────
+        # ── 1. Decode image ───────────────────────────────────────────────────
         try:
             image_array = decode_base64_image(data["image"])
         except Exception as e:
             return jsonify({"success": False, "error": f"Image decode failed: {e}"}), 400
 
-        submitted_encoding, err = encode_face_from_array(image_array)
+        # ── 2. Detect face + embedding + bounding box ─────────────────────────
+        submitted_encoding, bbox, err = encode_face_with_bbox(image_array)
         if err:
             return jsonify({"success": False, "error": err}), 422
         if submitted_encoding is None:
@@ -200,7 +219,18 @@ def verify():
                 "error": "Could not generate face embedding. Please try again.",
             }), 422
 
-        # ── Load student encodings (batch-scoped cache) ───────────────────────
+        # ── 3. Passive liveness check (MiniFASNet) ────────────────────────────
+        is_live, liveness_score, liveness_reason = check_liveness(image_array, bbox)
+        if not is_live:
+            logger.warning(
+                f"Liveness FAILED: score={liveness_score:.3f} reason={liveness_reason}"
+            )
+            return jsonify({
+                "success": False,
+                "error":   "Live face not detected. Please ensure you are in front of the camera.",
+            }), 400
+
+        # ── 4. Load student encodings (batch-scoped cache) ────────────────────
         students = get_students_cached(batch_id=batch_id)
         if not students:
             return jsonify({
@@ -208,11 +238,10 @@ def verify():
                 "error":   "No students with face photos found in this batch.",
             }), 404
 
-        # ── Match ─────────────────────────────────────────────────────────────
+        # ── 5. Match ──────────────────────────────────────────────────────────
         best_match, confidence = find_best_match(
             submitted_encoding, students, tolerance=FACE_MATCH_TOLERANCE
         )
-
         if not best_match:
             logger.info("No face match found.")
             return jsonify({
@@ -221,50 +250,49 @@ def verify():
                 "message": "Face not recognised. Please try again or contact admin.",
             })
 
-        logger.info(f"Match: {best_match['name']} ({confidence}% confidence)")
+        logger.info(f"Match: {best_match['name']} ({confidence:.1f}% confidence)")
 
-        # ── Duplicate attendance guard ─────────────────────────────────────────
-        from datetime import datetime
+        # ── 6. Dedup check (in-memory O(1) + SQLite <1ms — no Zoho call) ──────
         today_str = datetime.now().strftime("%d-%b-%Y")
-        if zoho.check_duplicate_attendance(best_match["id"], today_str, session_id=session_id):
-            logger.info(f"Duplicate attendance blocked for {best_match['name']}")
+        if att_queue.is_already_marked(best_match["id"], today_str, session_id=session_id):
+            logger.info(f"Duplicate blocked for {best_match['name']}")
             return jsonify({
-                "success":    True,
-                "matched":    True,
-                "duplicate":  True,
+                "success":           True,
+                "matched":           True,
+                "duplicate":         True,
                 "student": {
                     "id":   best_match["id"],
                     "name": best_match["name"],
                 },
-                "confidence":         confidence,
-                "attendance_posted":  False,
+                "confidence":        confidence,
+                "attendance_posted": False,
                 "message": f"{best_match['name']} is already marked present today.",
             })
 
-        # ── Post attendance ───────────────────────────────────────────────────
-        att_result = zoho.post_attendance(
+        # ── 7. Enqueue to SQLite + return success (Zoho sync happens async) ───
+        queue_id = att_queue.enqueue(
             student_id=best_match["id"],
             student_name=best_match["name"],
-            verification_type="face_blink_verified",
+            date_str=today_str,
             session_id=session_id,
+        )
+        logger.info(
+            f"Attendance queued for {best_match['name']} "
+            f"(queue #{queue_id}, liveness={liveness_score:.2f})"
         )
 
         return jsonify({
-            "success":    True,
-            "matched":    True,
-            "duplicate":  False,
+            "success":           True,
+            "matched":           True,
+            "duplicate":         False,
             "student": {
-                "id":           best_match["id"],
-                "name":         best_match["name"],
-                "roll_number":  best_match.get("student_number", ""),
+                "id":          best_match["id"],
+                "name":        best_match["name"],
+                "roll_number": best_match.get("student_number", ""),
             },
             "confidence":        confidence,
-            "attendance_posted": att_result.get("success", False),
-            "message": (
-                f"Welcome, {best_match['name']}! Attendance marked successfully."
-                if att_result.get("success")
-                else f"Matched as {best_match['name']} but attendance posting failed. Please contact admin."
-            ),
+            "attendance_posted": True,
+            "message":           f"Welcome, {best_match['name']}! Attendance marked successfully.",
         })
 
     except Exception as e:
@@ -272,14 +300,146 @@ def verify():
         return jsonify({"success": False, "error": f"Internal server error: {str(e)}"}), 500
 
 
+# ─── Admin: queue sync status ─────────────────────────────────────────────────
+
+@app.route("/admin/sync-status")
+def admin_sync_status():
+    """
+    Shows attendance queue health — pending/posted/failed counts and failed records.
+    Protected by ADMIN_SECRET.
+    """
+    secret = request.args.get("secret", "")
+    if secret != ADMIN_SECRET:
+        return make_response("Unauthorized. Add ?secret=YOUR_ADMIN_SECRET to the URL.", 401)
+
+    summary = att_queue.get_status_summary()
+
+    failed_rows_html = ""
+    for r in summary["failed_records"]:
+        failed_rows_html += f"""
+        <tr>
+          <td>#{r['id']}</td>
+          <td>{r['student_name']}</td>
+          <td>{r['date_str']}</td>
+          <td>{r.get('session_id') or '—'}</td>
+          <td>{r['attempts']}</td>
+          <td style="color:#f87171;font-size:12px">{(r['last_error'] or '')[:120]}</td>
+          <td style="font-size:11px;color:#6b7280">{r['created_at'][:19]}</td>
+        </tr>"""
+
+    stuck_rows_html = ""
+    for r in summary["stuck_pending"]:
+        stuck_rows_html += f"""
+        <tr>
+          <td>#{r['id']}</td>
+          <td>{r['student_name']}</td>
+          <td>{r['date_str']}</td>
+          <td>{r['attempts']}</td>
+          <td style="font-size:11px;color:#6b7280">{r['created_at'][:19]}</td>
+        </tr>"""
+
+    pending_color = "#fbbf24" if summary["pending"] > 0 else "#4ade80"
+    failed_color  = "#f87171" if summary["failed"]  > 0 else "#4ade80"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Attendance Sync Status</title>
+  <style>
+    body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+           background:#0d1117;color:#e6edf3;margin:0;padding:24px; }}
+    h2   {{ margin:0 0 4px;font-size:20px; }}
+    .sub {{ color:#8b949e;font-size:13px;margin:0 0 24px; }}
+    .cards {{ display:flex;gap:16px;flex-wrap:wrap;margin-bottom:28px; }}
+    .card {{ background:#161b22;border:1px solid #30363d;border-radius:10px;
+             padding:20px 28px;min-width:130px; }}
+    .num  {{ font-size:36px;font-weight:700;margin:4px 0; }}
+    .lbl  {{ font-size:13px;color:#8b949e; }}
+    table {{ width:100%;border-collapse:collapse;font-size:13px;margin-bottom:28px; }}
+    th    {{ text-align:left;padding:8px 12px;background:#161b22;
+             border-bottom:1px solid #30363d;color:#8b949e;font-weight:500; }}
+    td    {{ padding:8px 12px;border-bottom:1px solid #21262d; }}
+    tr:hover td {{ background:#161b22; }}
+    .btn  {{ display:inline-block;padding:10px 20px;background:#dc2626;color:#fff;
+             border:none;border-radius:8px;font-size:14px;font-weight:600;
+             cursor:pointer;text-decoration:none; }}
+    .btn:hover {{ opacity:.85; }}
+    h3 {{ margin:0 0 12px;font-size:15px;color:#e6edf3; }}
+  </style>
+</head>
+<body>
+  <h2>Attendance Sync Status</h2>
+  <p class="sub">Records from today and yesterday. Background worker retries every 2 seconds.</p>
+
+  <div class="cards">
+    <div class="card">
+      <div class="lbl">Pending</div>
+      <div class="num" style="color:{pending_color}">{summary['pending']}</div>
+      <div class="lbl">queued, not yet synced</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Posted</div>
+      <div class="num" style="color:#4ade80">{summary['posted']}</div>
+      <div class="lbl">synced to Zoho</div>
+    </div>
+    <div class="card">
+      <div class="lbl">Failed</div>
+      <div class="num" style="color:{failed_color}">{summary['failed']}</div>
+      <div class="lbl">need admin attention</div>
+    </div>
+  </div>
+
+  {f'''
+  <h3>Failed Records</h3>
+  <table>
+    <thead><tr>
+      <th>#</th><th>Student</th><th>Date</th><th>Session</th>
+      <th>Attempts</th><th>Last Error</th><th>Created</th>
+    </tr></thead>
+    <tbody>{failed_rows_html}</tbody>
+  </table>
+  <a class="btn" href="/admin/retry-failed?secret={secret}"
+     onclick="return confirm('Reset all FAILED records to PENDING?')">
+    ↺ Retry All Failed ({summary['failed']})
+  </a>
+  ''' if summary['failed'] > 0 else '<p style="color:#4ade80;font-size:14px">✓ No failed records.</p>'}
+
+  {f'''
+  <h3 style="margin-top:24px">Stuck Pending (&gt; 5 min old)</h3>
+  <table>
+    <thead><tr><th>#</th><th>Student</th><th>Date</th><th>Attempts</th><th>Created</th></tr></thead>
+    <tbody>{stuck_rows_html}</tbody>
+  </table>
+  ''' if summary['stuck_pending'] else ''}
+
+  <p style="margin-top:20px;font-size:13px;">
+    <a href="/admin/sync-status?secret={secret}" style="color:#60a5fa">↻ Refresh</a>
+    &nbsp;|&nbsp;
+    <a href="/admin/reauth?secret={secret}" style="color:#60a5fa">Re-auth Zoho →</a>
+    &nbsp;|&nbsp;
+    <a href="/" style="color:#60a5fa">← Attendance app</a>
+  </p>
+</body>
+</html>"""
+
+
+@app.route("/admin/retry-failed", methods=["GET", "POST"])
+def admin_retry_failed():
+    """Reset all FAILED queue records to PENDING so the worker retries them."""
+    secret = request.args.get("secret", "")
+    if secret != ADMIN_SECRET:
+        return make_response("Unauthorized.", 401)
+    count = att_queue.retry_failed()
+    return jsonify({"success": True, "records_reset": count,
+                    "message": f"{count} FAILED record(s) reset to PENDING."})
+
+
+# ─── Reauth ───────────────────────────────────────────────────────────────────
 
 @app.route("/admin/reauth", methods=["GET"])
 def admin_reauth_page():
-    """
-    Admin page: paste a Zoho Self Client auth code to regenerate the refresh token.
-    Protected by ADMIN_SECRET query param or form field.
-    Usage: https://your-app.onrender.com/admin/reauth?secret=YOUR_ADMIN_SECRET
-    """
     secret = request.args.get("secret", "")
     if secret != ADMIN_SECRET:
         return make_response("Unauthorized. Add ?secret=YOUR_ADMIN_SECRET to the URL.", 401)
@@ -317,18 +477,16 @@ def admin_reauth_page():
     button:hover {{ opacity: .85; }}
     .badge {{ display: inline-block; padding: 2px 10px; border-radius: 20px;
               font-size: 12px; margin-bottom: 16px; }}
-    .ok  {{ background: rgba(22,163,74,.15); color: #4ade80; border: 1px solid rgba(22,163,74,.3); }}
+    .ok   {{ background: rgba(22,163,74,.15); color: #4ade80; border: 1px solid rgba(22,163,74,.3); }}
     .warn {{ background: rgba(217,119,6,.15); color: #fbbf24; border: 1px solid rgba(217,119,6,.3); }}
   </style>
 </head>
 <body>
 <div class="box">
-  <h2>🔐 Re-Authorise Zoho</h2>
+  <h2>Re-Authorise Zoho</h2>
   <p>The Zoho OAuth token has expired. Follow these steps to regenerate it automatically.</p>
-
-  {'<span class="badge ok">✓ Render API configured — token will auto-update</span>' if render_configured else
-   '<span class="badge warn">⚠ RENDER_API_KEY / RENDER_SERVICE_ID not set — token saved in memory only</span>'}
-
+  {'<span class="badge ok">Render API configured — token will auto-update</span>' if render_configured else
+   '<span class="badge warn">RENDER_API_KEY / RENDER_SERVICE_ID not set — token saved in memory only</span>'}
   <ol>
     <li>Go to <a href="https://api-console.zoho.com" target="_blank">api-console.zoho.com</a> → your Self Client app</li>
     <li>Click <strong>Generate Code</strong> and use these scopes:<br/>
@@ -336,7 +494,6 @@ def admin_reauth_page():
     <li>Set duration to <strong>10 minutes</strong>, click Create, copy the code</li>
     <li>Paste it below and click Submit</li>
   </ol>
-
   <form method="POST" action="/admin/reauth?secret={secret}">
     <label style="font-size:13px; color:#8b949e;">Zoho Authorization Code</label>
     <textarea name="auth_code" placeholder="1000.xxxxxxxxxxxx.xxxxxxxxxxxx" required></textarea>
@@ -350,7 +507,6 @@ def admin_reauth_page():
 
 @app.route("/admin/reauth", methods=["POST"])
 def admin_reauth_submit():
-    """Exchange a Zoho auth code for a new refresh token and save it to Render env vars."""
     secret = request.args.get("secret", "")
     if secret != ADMIN_SECRET:
         return make_response("Unauthorized.", 401)
@@ -359,7 +515,6 @@ def admin_reauth_submit():
     if not auth_code:
         return make_response("auth_code is required.", 400)
 
-    # ── 1. Exchange code for tokens ───────────────────────────────────────────
     token_url = f"https://accounts.zoho.{ZOHO_DATA_CENTER}/oauth/v2/token"
     try:
         resp = req.post(token_url, data={
@@ -377,72 +532,72 @@ def admin_reauth_submit():
     if not new_refresh_token:
         return _reauth_result(False, f"No refresh_token in response: {tokens}", secret)
 
-    # ── 2. Hot-reload the token in this running process ───────────────────────
     import config as cfg
     cfg.ZOHO_REFRESH_TOKEN = new_refresh_token
     zoho._access_token = tokens.get("access_token")
     os.environ["ZOHO_REFRESH_TOKEN"] = new_refresh_token
-    logger.info("Zoho refresh token hot-reloaded successfully.")
+    logger.info("Zoho refresh token hot-reloaded.")
 
-    # ── 3. Persist to Render environment variables ────────────────────────────
     render_updated = False
     render_msg = ""
     if RENDER_API_KEY and RENDER_SERVICE_ID:
         try:
             render_resp = req.put(
                 f"https://api.render.com/v1/services/{RENDER_SERVICE_ID}/env-vars",
-                headers={
-                    "Authorization": f"Bearer {RENDER_API_KEY}",
-                    "Content-Type":  "application/json",
-                },
+                headers={"Authorization": f"Bearer {RENDER_API_KEY}", "Content-Type": "application/json"},
                 json=[{"key": "ZOHO_REFRESH_TOKEN", "value": new_refresh_token}],
                 timeout=15,
             )
             if render_resp.status_code in (200, 201):
                 render_updated = True
-                render_msg = "Render environment variable updated successfully."
-                logger.info("ZOHO_REFRESH_TOKEN updated in Render via API.")
+                render_msg = "Render environment variable updated."
+                logger.info("ZOHO_REFRESH_TOKEN updated in Render.")
             else:
-                render_msg = f"Render API returned HTTP {render_resp.status_code}: {render_resp.text[:200]}"
-                logger.warning(render_msg)
+                render_msg = f"Render API HTTP {render_resp.status_code}: {render_resp.text[:200]}"
         except Exception as e:
             render_msg = f"Render API call failed: {e}"
-            logger.warning(render_msg)
     else:
-        render_msg = "RENDER_API_KEY / RENDER_SERVICE_ID not configured — token active for this session only."
+        render_msg = "RENDER_API_KEY / RENDER_SERVICE_ID not set — token active for this session only."
 
     return _reauth_result(True, render_msg, secret, render_updated, new_refresh_token[:20] + "...")
 
 
-def _reauth_result(success: bool, message: str, secret: str,
-                   render_updated: bool = False, token_preview: str = "") -> str:
+def _reauth_result(success, message, secret, render_updated=False, token_preview=""):
     colour = "#4ade80" if success else "#f87171"
     icon   = "✓" if success else "✗"
     render_note = (
-        f'<p style="color:#4ade80; font-size:13px;">✓ Saved to Render — new deploys will use the new token automatically.</p>'
+        '<p style="color:#4ade80;font-size:13px;">✓ Saved to Render — new deploys will use the new token.</p>'
         if render_updated else
-        f'<p style="color:#fbbf24; font-size:13px;">⚠ {message}</p>'
+        f'<p style="color:#fbbf24;font-size:13px;">⚠ {message}</p>'
     )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"/><title>Re-Auth Result</title>
 <style>
-  body {{ font-family: -apple-system,sans-serif; background:#0d1117; color:#e6edf3;
-         display:flex; align-items:center; justify-content:center; min-height:100vh; }}
-  .box {{ background:#161b22; border:1px solid #30363d; border-radius:12px; padding:32px; max-width:480px; width:100%; }}
-  a {{ color:#60a5fa; font-size:13px; }}
+  body {{ font-family:-apple-system,sans-serif;background:#0d1117;color:#e6edf3;
+         display:flex;align-items:center;justify-content:center;min-height:100vh; }}
+  .box {{ background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;max-width:480px;width:100%; }}
+  a {{ color:#60a5fa;font-size:13px; }}
 </style>
 </head>
 <body>
 <div class="box">
   <h2 style="color:{colour}">{icon} {"Success" if success else "Failed"}</h2>
-  <p style="color:#8b949e; font-size:13px;">{"New refresh token: <code>" + token_preview + "</code>" if token_preview else message}</p>
+  <p style="color:#8b949e;font-size:13px;">{"New token: <code>" + token_preview + "</code>" if token_preview else message}</p>
   {render_note if success else ""}
-  <p style="margin-top:20px;"><a href="/admin/reauth?secret={secret}">← Try again</a> &nbsp;|&nbsp; <a href="/">Go to attendance app →</a></p>
+  <p style="margin-top:20px;">
+    <a href="/admin/reauth?secret={secret}">← Try again</a>
+    &nbsp;|&nbsp;
+    <a href="/admin/sync-status?secret={secret}">Sync status →</a>
+    &nbsp;|&nbsp;
+    <a href="/">Attendance app →</a>
+  </p>
 </div>
 </body>
 </html>"""
 
+
+# ─── Debug ────────────────────────────────────────────────────────────────────
 
 @app.route("/api/debug/students")
 def debug_students():
@@ -450,16 +605,13 @@ def debug_students():
     try:
         token = zoho._refresh_token()
         headers = {"Authorization": f"Zoho-oauthtoken {token}"}
-
-        s_url = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}"
+        s_url  = f"{zoho._base_url}/report/{ZOHO_STUDENT_REPORT}"
         s_resp = req.get(s_url, headers=headers, params={"from": 1, "limit": 3}, timeout=20)
         s_resp.raise_for_status()
         s_records = s_resp.json().get("data", [])
-
-        a_url = f"{zoho._base_url}/report/All_Attendances"
+        a_url  = f"{zoho._base_url}/report/All_Attendances"
         a_resp = req.get(a_url, headers=headers, params={"from": 1, "limit": 3}, timeout=20)
         a_records = a_resp.json().get("data", []) if a_resp.status_code == 200 else []
-
         return jsonify({
             "student_field_keys":    list(s_records[0].keys()) if s_records else [],
             "student_sample":        [{k: str(v)[:100] for k, v in r.items()} for r in s_records[:2]],

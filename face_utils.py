@@ -120,6 +120,28 @@ def encode_face_from_array(image_array: np.ndarray):
     return embedding, None
 
 
+def encode_face_with_bbox(image_array: np.ndarray):
+    """
+    Detect and encode the primary face, also returning its bounding box.
+    Returns (embedding, bbox, None) or (None, None, error_message).
+    The bbox is needed by liveness_utils.check_liveness().
+    """
+    app = _get_face_app()
+    faces = app.get(image_array)
+
+    if not faces:
+        return None, None, "No face detected in the image."
+
+    largest = max(
+        faces,
+        key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
+    )
+    embedding = largest.normed_embedding
+    if embedding is None:
+        return None, None, "Face detected but could not generate embedding (try facing the camera directly)."
+    return embedding, largest.bbox, None
+
+
 def encode_face_from_bytes(image_bytes: bytes):
     """Encode a face from raw image bytes (e.g. downloaded from Zoho Creator URL)."""
     try:

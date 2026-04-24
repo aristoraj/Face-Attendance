@@ -47,7 +47,7 @@ FIELD_ATT_STATUS  = os.environ.get("FIELD_ATT_STATUS",  "Attendance")   # dropdo
 FIELD_ATT_SESSION = os.environ.get("FIELD_ATT_SESSION", "Session")
 
 # ─── Face Recognition Settings ────────────────────────────────────────────────
-FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.55"))
+FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.40"))
 CACHE_TTL_SECONDS    = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
 
 # ─── App Settings ─────────────────────────────────────────────────────────────

@@ -1,18 +1,16 @@
 """
 Face recognition utilities using InsightFace (ArcFace / ONNX).
 
-Replaces the previous dlib/face_recognition implementation.
+Model: buffalo_l (ResNet100 ArcFace + RetinaFace detector)
+  - 512-d normed embeddings, cosine similarity matching
+  - Handles similar Indian faces, angled photos, low-quality enrollment images
+  - det_size=640: larger detection grid for distant / tilted faces
 
-Why insightface:
-  - Pre-built wheels — no C++ compilation, deploys in seconds
-  - buffalo_sc model: ArcFace recognition + RetinaFace detection
-  - Cosine similarity on 512-d normed embeddings
-  - More accurate than HOG-based dlib on varied lighting / angles
-
-Similarity thresholds for buffalo_sc:
-  > 0.35  likely same person
-  > 0.50  confident match
-  > 0.65  very high confidence
+Similarity thresholds for buffalo_l normed embeddings:
+  > 0.30  likely same person (low quality / extreme angle)
+  > 0.40  confident match  ← default FACE_MATCH_TOLERANCE
+  > 0.55  high confidence
+  > 0.70  very high confidence
 """
 
 import io
@@ -38,15 +36,16 @@ def _get_face_app():
         with _face_app_lock:
             if _face_app is None:
                 from insightface.app import FaceAnalysis
-                logger.info("Loading InsightFace buffalo_sc model...")
+                logger.info("Loading InsightFace buffalo_l model...")
                 app = FaceAnalysis(
-                    name="buffalo_sc",
+                    name="buffalo_l",
                     root="/app/.insightface",
                     providers=["CPUExecutionProvider"],
                 )
-                app.prepare(ctx_id=0, det_size=(320, 320))
+                # 640×640 detection grid: catches faces at distance and odd angles
+                app.prepare(ctx_id=0, det_size=(640, 640))
                 _face_app = app
-                logger.info("InsightFace model loaded successfully.")
+                logger.info("InsightFace buffalo_l model loaded successfully.")
     return _face_app
 
 
@@ -153,13 +152,14 @@ def encode_face_from_bytes(image_bytes: bytes):
 
 # ── Face matching ─────────────────────────────────────────────────────────────
 
-SIMILARITY_THRESHOLD = 0.25  # buffalo_sc: lowered from 0.35 — real-world lighting/angle variance
-
-
-def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: float = 0.55):
+def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: float = 0.40):
     """
     Find the best-matching student using cosine similarity.
-    insightface normed embeddings: dot product = cosine similarity.
+    InsightFace normed embeddings: dot product = cosine similarity in [-1, 1].
+
+    tolerance: minimum cosine similarity to accept as a match.
+      buffalo_l recommended range: 0.35 (permissive) – 0.45 (strict).
+      Default 0.40 balances accuracy vs false-reject rate for 1200 Indian students.
     """
     if not students:
         return None, 0.0
@@ -170,11 +170,15 @@ def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: 
     best_idx = int(np.argmax(similarities))
     best_sim = float(similarities[best_idx])
 
-    logger.info(f"Best similarity: {best_sim:.3f} (threshold: {SIMILARITY_THRESHOLD}) — student: {students[best_idx]['name']}")
+    logger.info(
+        f"Best similarity: {best_sim:.3f} (tolerance: {tolerance}) "
+        f"— student: {students[best_idx]['name']}"
+    )
 
-    if best_sim >= SIMILARITY_THRESHOLD:
+    if best_sim >= tolerance:
+        # Scale to 0–100% between tolerance and 0.75 (practical upper bound)
         confidence = round(
-            min((best_sim - SIMILARITY_THRESHOLD) / (0.65 - SIMILARITY_THRESHOLD) * 100, 99.9), 1
+            min((best_sim - tolerance) / (0.75 - tolerance) * 100, 99.9), 1
         )
         return students[best_idx], confidence
 

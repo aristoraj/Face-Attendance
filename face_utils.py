@@ -98,16 +98,16 @@ def decode_base64_image(b64_string: str) -> np.ndarray:
 
 # ── Face encoding ─────────────────────────────────────────────────────────────
 
-def encode_face_from_array(image_array: np.ndarray):
+def _encode_largest_face(image_array: np.ndarray):
     """
-    Detect and encode the primary face in an RGB numpy array.
-    Returns (512-d normed embedding, None) or (None, error_message).
+    Internal helper. Returns (embedding, bbox, det_score, error).
+    Selects the largest detected face in the frame.
     """
     app = _get_face_app()
     faces = app.get(image_array)
 
     if not faces:
-        return None, "No face detected in the image."
+        return None, None, None, "No face detected in the image."
 
     largest = max(
         faces,
@@ -115,39 +115,42 @@ def encode_face_from_array(image_array: np.ndarray):
     )
     embedding = largest.normed_embedding
     if embedding is None:
-        return None, "Face detected but could not generate embedding (try facing the camera directly)."
-    return embedding, None
+        return None, None, None, "Face detected but could not generate embedding (try facing the camera directly)."
+
+    det_score = float(getattr(largest, "det_score", 1.0))
+    return embedding, largest.bbox, det_score, None
+
+
+def encode_face_from_array(image_array: np.ndarray):
+    """
+    Detect and encode the primary face in an RGB numpy array.
+    Returns (embedding, None) or (None, error_message).
+    """
+    embedding, _, _, err = _encode_largest_face(image_array)
+    return embedding, err
 
 
 def encode_face_with_bbox(image_array: np.ndarray):
     """
-    Detect and encode the primary face, also returning its bounding box.
-    Returns (embedding, bbox, None) or (None, None, error_message).
-    The bbox is needed by liveness_utils.check_liveness().
+    Detect and encode the primary face, also returning bbox and det_score.
+    Returns (embedding, bbox, det_score, error).
+    bbox is needed by liveness_utils.check_liveness().
+    det_score is the face detection confidence (0–1).
     """
-    app = _get_face_app()
-    faces = app.get(image_array)
-
-    if not faces:
-        return None, None, "No face detected in the image."
-
-    largest = max(
-        faces,
-        key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
-    )
-    embedding = largest.normed_embedding
-    if embedding is None:
-        return None, None, "Face detected but could not generate embedding (try facing the camera directly)."
-    return embedding, largest.bbox, None
+    return _encode_largest_face(image_array)
 
 
 def encode_face_from_bytes(image_bytes: bytes):
-    """Encode a face from raw image bytes (e.g. downloaded from Zoho Creator URL)."""
+    """
+    Encode a face from raw image bytes (e.g. downloaded from Zoho Creator URL).
+    Returns (embedding, det_score, error).
+    """
     try:
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        return encode_face_from_array(np.array(image))
+        embedding, _, det_score, err = _encode_largest_face(np.array(image))
+        return embedding, det_score, err
     except Exception as e:
-        return None, str(e)
+        return None, None, str(e)
 
 
 # ── Face matching ─────────────────────────────────────────────────────────────
@@ -157,6 +160,10 @@ def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: 
     Find the best-matching student using cosine similarity.
     InsightFace normed embeddings: dot product = cosine similarity in [-1, 1].
 
+    Each student dict must have "encodings": [np.ndarray, ...] — a list of one
+    or more stored embeddings (enrollment photo + verified live captures).
+    The best similarity across ALL stored embeddings is used per student.
+
     tolerance: minimum cosine similarity to accept as a match.
       buffalo_l recommended range: 0.35 (permissive) – 0.45 (strict).
       Default 0.40 balances accuracy vs false-reject rate for 1200 Indian students.
@@ -164,15 +171,28 @@ def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: 
     if not students:
         return None, 0.0
 
-    known_embeddings = np.array([s["encoding"] for s in students])
-    similarities = np.dot(known_embeddings, submitted_embedding)
+    # Build flat list — multiple embeddings per student map back to student index
+    all_embeddings = []
+    student_indices = []
+    for i, student in enumerate(students):
+        for emb in student.get("encodings", []):
+            all_embeddings.append(emb)
+            student_indices.append(i)
 
-    best_idx = int(np.argmax(similarities))
-    best_sim = float(similarities[best_idx])
+    if not all_embeddings:
+        return None, 0.0
+
+    matrix = np.array(all_embeddings, dtype=np.float32)           # (total_embs, 512)
+    similarities = np.dot(matrix, submitted_embedding.astype(np.float32))  # (total_embs,)
+
+    best_flat_idx = int(np.argmax(similarities))
+    best_sim = float(similarities[best_flat_idx])
+    best_student_idx = student_indices[best_flat_idx]
 
     logger.info(
         f"Best similarity: {best_sim:.3f} (tolerance: {tolerance}) "
-        f"— student: {students[best_idx]['name']}"
+        f"— student: {students[best_student_idx]['name']} "
+        f"({len(all_embeddings)} total embeddings across {len(students)} students)"
     )
 
     if best_sim >= tolerance:
@@ -180,7 +200,7 @@ def find_best_match(submitted_embedding: np.ndarray, students: list, tolerance: 
         confidence = round(
             min((best_sim - tolerance) / (0.75 - tolerance) * 100, 99.9), 1
         )
-        return students[best_idx], confidence
+        return students[best_student_idx], confidence
 
     return None, 0.0
 

@@ -1,21 +1,20 @@
 """
-SQLite-backed attendance outbox with async Zoho sync.
+SQLite / PostgreSQL attendance outbox with async Zoho sync.
 
 Flow per verify request:
-  1. Face matched → is_already_marked() check (in-memory O(1), then SQLite <1ms)
-  2. enqueue() → write to SQLite instantly → return success to student
+  1. Face matched → is_already_marked() check (in-memory O(1), then DB <1ms)
+  2. enqueue() → write to DB instantly → return success to student
   3. Background worker drains PENDING rows → posts to Zoho → marks POSTED
   4. On Zoho failure: exponential backoff retry (5s, 15s, 45s, 135s, 405s)
   5. After 5 failed attempts: mark FAILED — visible at /admin/sync-status
 
-This removes both Zoho API calls (duplicate check + post) from the hot path,
-cutting per-student latency from ~6s to ~1.5s and eliminating silent data loss
-when Zoho is temporarily unreachable.
+Also manages the face_embeddings table:
+  - Multi-source: 'enrollment' photo + up to 3 'verified_N' live captures per student
+  - SQLite by default; PostgreSQL when DATABASE_URL env var is set
 """
 
 import logging
 import os
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
@@ -28,28 +27,75 @@ DB_PATH = os.environ.get(
     "ATTENDANCE_DB_PATH",
     os.path.join(os.path.dirname(__file__), "data", "attendance_queue.db"),
 )
+DATABASE_URL = os.environ.get("DATABASE_URL")   # Render managed PostgreSQL
 MAX_ATTEMPTS = 5
-WORKER_POLL_INTERVAL = 2  # seconds between drain cycles
+WORKER_POLL_INTERVAL = 2
+
+
+# ── Thin connection wrapper — uniform interface for sqlite3 and psycopg2 ──────
+
+class _ConnWrapper:
+    """
+    Wraps a raw sqlite3 or psycopg2 connection so that conn.execute(sql, params)
+    works identically for both backends.
+    """
+
+    def __init__(self, raw_conn, is_postgres: bool):
+        self._raw = raw_conn
+        self._pg = is_postgres
+        self._cur = raw_conn.cursor() if is_postgres else None
+
+    def execute(self, sql: str, params=()):
+        if self._pg:
+            self._cur.execute(sql, params)
+            return self._cur
+        else:
+            return self._raw.execute(sql, params)
+
+    def commit(self):
+        self._raw.commit()
+
+    def rollback(self):
+        self._raw.rollback()
+
+    def close(self):
+        if self._pg and self._cur:
+            try:
+                self._cur.close()
+            except Exception:
+                pass
+        try:
+            self._raw.close()
+        except Exception:
+            pass
 
 
 class AttendanceQueue:
     """
-    Thread-safe SQLite outbox + background Zoho sync worker.
+    Thread-safe DB outbox + background Zoho sync worker.
 
-    Multiple Gunicorn workers share the same SQLite file — SQLite's WAL mode
-    handles concurrent writes. In-memory dedup sets are per-process but
-    fall back to the shared SQLite for cross-process correctness.
+    Supports SQLite (default, single instance) and PostgreSQL (multi-instance,
+    set DATABASE_URL env var). The face_embeddings table stores multiple
+    angle-variant embeddings per student for better accuracy.
     """
 
     def __init__(self, zoho_api):
         self._zoho = zoho_api
         self._lock = threading.Lock()
 
-        # In-memory fast-path dedup (per-process, rebuilt from DB on start)
-        # {date_str: set_of_student_ids}
+        self._is_postgres = bool(DATABASE_URL)
+        # SQL placeholder: ? for SQLite, %s for PostgreSQL
+        self._ph = "%s" if self._is_postgres else "?"
+
+        # In-memory fast-path dedup {date_str: set_of_student_ids}
         self._global_marked: dict[str, set] = {}
         # {(date_str, session_id): set_of_student_ids}
         self._session_marked: dict[tuple, set] = {}
+
+        if self._is_postgres:
+            logger.info("AttendanceQueue: using PostgreSQL (DATABASE_URL set).")
+        else:
+            logger.info(f"AttendanceQueue: using SQLite at {DB_PATH}.")
 
         self._init_db()
         self._rebuild_dedup_from_db()
@@ -60,12 +106,27 @@ class AttendanceQueue:
 
     # ── DB helpers ────────────────────────────────────────────────────────────
 
+    def _q(self, sql: str) -> str:
+        """Convert ? placeholders to %s for PostgreSQL."""
+        if self._is_postgres:
+            return sql.replace("?", "%s")
+        return sql
+
     @contextmanager
     def _db(self):
-        """Open a DB connection. WAL mode is set once at init, not here."""
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
-        conn.row_factory = sqlite3.Row
+        if self._is_postgres:
+            import psycopg2
+            import psycopg2.extras
+            # Render provides postgres:// URLs; psycopg2 needs postgresql://
+            dsn = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+            raw = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+        else:
+            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+            import sqlite3
+            raw = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+            raw.row_factory = sqlite3.Row
+
+        conn = _ConnWrapper(raw, self._is_postgres)
         try:
             yield conn
             conn.commit()
@@ -76,41 +137,100 @@ class AttendanceQueue:
             conn.close()
 
     def _set_wal_mode(self):
-        """
-        Enable WAL journal mode for safe multi-process concurrent writes.
-        WAL is persistent in the DB file — only needs to be set once ever.
-        PRAGMA journal_mode=WAL requires an exclusive lock; all 4 Gunicorn
-        workers race to set it at startup, so we retry with backoff instead
-        of crashing.
-        """
+        """Enable WAL journal mode for safe concurrent writes (SQLite only)."""
+        if self._is_postgres:
+            return   # PostgreSQL handles concurrency natively
+        import sqlite3
         for attempt in range(20):
-            conn = None
+            raw = None
             try:
-                conn = sqlite3.connect(DB_PATH, timeout=2)
-                row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
-                conn.close()
+                raw = sqlite3.connect(DB_PATH, timeout=2)
+                row = raw.execute("PRAGMA journal_mode=WAL").fetchone()
+                raw.close()
                 if row and row[0] == "wal":
-                    return   # already set — done
-                break        # set to something else but no error — move on
+                    return
+                break
             except sqlite3.OperationalError:
-                if conn:
+                if raw:
                     try:
-                        conn.close()
+                        raw.close()
                     except Exception:
                         pass
-                time.sleep(0.15 * (attempt + 1))   # 0.15s, 0.30s … up to ~3s total
+                time.sleep(0.15 * (attempt + 1))
         else:
-            logger.warning(
-                "Could not set WAL journal mode after retries — "
-                "falling back to default mode (safe, slightly less concurrent)."
+            logger.warning("Could not set WAL journal mode — falling back to default.")
+
+    def _table_exists(self, conn, table_name: str) -> bool:
+        if self._is_postgres:
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name=?",
+                (table_name,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,)
+            ).fetchone()
+        return row is not None
+
+    def _migrate_embeddings_schema(self, conn):
+        """Migrate face_embeddings v1 (single PRIMARY KEY) → v2 (multi-source)."""
+        try:
+            if not self._table_exists(conn, "face_embeddings"):
+                return   # fresh install — no migration needed
+
+            if self._is_postgres:
+                row = conn.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='face_embeddings' AND column_name='source'"
+                ).fetchone()
+                has_source = row is not None
+            else:
+                info = conn.execute("PRAGMA table_info(face_embeddings)").fetchall()
+                has_source = any(r["name"] == "source" for r in info)
+
+            if has_source:
+                return   # already v2 — nothing to do
+
+            logger.info("Migrating face_embeddings to multi-source schema...")
+            conn.execute("ALTER TABLE face_embeddings RENAME TO face_embeddings_v1")
+            self._create_embeddings_table(conn)
+            conn.execute(self._q(
+                "INSERT INTO face_embeddings (student_id, source, embedding, updated_at) "
+                "SELECT student_id, 'enrollment', embedding, updated_at FROM face_embeddings_v1"
+            ))
+            conn.execute("DROP TABLE face_embeddings_v1")
+            logger.info("face_embeddings migration complete.")
+        except Exception as e:
+            logger.warning(f"face_embeddings migration skipped: {e}")
+
+    def _create_embeddings_table(self, conn):
+        serial = "BIGSERIAL" if self._is_postgres else "INTEGER"
+        autoincrement = "" if self._is_postgres else "AUTOINCREMENT"
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS face_embeddings (
+                id          {serial} PRIMARY KEY {autoincrement},
+                student_id  TEXT    NOT NULL,
+                source      TEXT    NOT NULL DEFAULT 'enrollment',
+                embedding   TEXT    NOT NULL,
+                det_score   REAL,
+                updated_at  TEXT    NOT NULL,
+                UNIQUE(student_id, source)
             )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_emb_student "
+            "ON face_embeddings(student_id)"
+        )
 
     def _init_db(self):
         self._set_wal_mode()
+        serial = "BIGSERIAL" if self._is_postgres else "INTEGER"
+        autoincrement = "" if self._is_postgres else "AUTOINCREMENT"
         with self._db() as conn:
-            conn.execute("""
+            conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS attendance_queue (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id            {serial} PRIMARY KEY {autoincrement},
                     student_id    TEXT    NOT NULL,
                     student_name  TEXT    NOT NULL,
                     date_str      TEXT    NOT NULL,
@@ -131,22 +251,17 @@ class AttendanceQueue:
                 "CREATE INDEX IF NOT EXISTS idx_student_date "
                 "ON attendance_queue(student_id, date_str, session_id)"
             )
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS face_embeddings (
-                    student_id   TEXT PRIMARY KEY,
-                    embedding    TEXT NOT NULL,
-                    updated_at   TEXT NOT NULL
-                )
-            """)
-        logger.info(f"Attendance queue DB at: {DB_PATH}")
+            self._migrate_embeddings_schema(conn)
+            self._create_embeddings_table(conn)
 
     def _rebuild_dedup_from_db(self):
-        """Populate in-memory dedup from today's active rows on startup."""
         today = datetime.now().strftime("%d-%b-%Y")
         with self._db() as conn:
             rows = conn.execute(
-                "SELECT student_id, session_id FROM attendance_queue "
-                "WHERE date_str=? AND status IN ('PENDING','PROCESSING','POSTED')",
+                self._q(
+                    "SELECT student_id, session_id FROM attendance_queue "
+                    "WHERE date_str=? AND status IN ('PENDING','PROCESSING','POSTED')"
+                ),
                 (today,),
             ).fetchall()
         with self._lock:
@@ -156,19 +271,8 @@ class AttendanceQueue:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def is_already_marked(
-        self,
-        student_id: str,
-        date_str: str,
-        session_id: Optional[str] = None,
-    ) -> bool:
-        """
-        O(1) in-memory check, with SQLite fallback for cross-worker correctness.
-        Replaces the ~2-3s Zoho duplicate-check API call.
-        """
+    def is_already_marked(self, student_id: str, date_str: str, session_id: Optional[str] = None) -> bool:
         sid = session_id or ""
-
-        # Fast in-memory path
         with self._lock:
             if sid:
                 if student_id in self._session_marked.get((date_str, sid), set()):
@@ -177,20 +281,23 @@ class AttendanceQueue:
                 if student_id in self._global_marked.get(date_str, set()):
                     return True
 
-        # SQLite fallback — handles another Gunicorn worker having enqueued first
         with self._db() as conn:
             if sid:
                 count = conn.execute(
-                    "SELECT COUNT(*) FROM attendance_queue "
-                    "WHERE student_id=? AND date_str=? AND session_id=? "
-                    "AND status IN ('PENDING','PROCESSING','POSTED')",
+                    self._q(
+                        "SELECT COUNT(*) FROM attendance_queue "
+                        "WHERE student_id=? AND date_str=? AND session_id=? "
+                        "AND status IN ('PENDING','PROCESSING','POSTED')"
+                    ),
                     (student_id, date_str, sid),
                 ).fetchone()[0]
             else:
                 count = conn.execute(
-                    "SELECT COUNT(*) FROM attendance_queue "
-                    "WHERE student_id=? AND date_str=? "
-                    "AND status IN ('PENDING','PROCESSING','POSTED')",
+                    self._q(
+                        "SELECT COUNT(*) FROM attendance_queue "
+                        "WHERE student_id=? AND date_str=? "
+                        "AND status IN ('PENDING','PROCESSING','POSTED')"
+                    ),
                     (student_id, date_str),
                 ).fetchone()[0]
 
@@ -200,31 +307,23 @@ class AttendanceQueue:
             return True
         return False
 
-    def enqueue(
-        self,
-        student_id: str,
-        student_name: str,
-        date_str: str,
-        session_id: Optional[str] = None,
-    ) -> int:
-        """
-        Record attendance locally and queue it for Zoho sync.
-        Returns the internal queue record ID.
-        This call is fast (~1ms) — the student sees success immediately.
-        """
+    def enqueue(self, student_id: str, student_name: str, date_str: str, session_id: Optional[str] = None) -> int:
         now = datetime.now().isoformat()
         sid = session_id or ""
+        sql = self._q("""
+            INSERT INTO attendance_queue
+                (student_id, student_name, date_str, session_id,
+                 status, attempts, created_at, updated_at, next_retry_at)
+            VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?, ?)
+        """)
+        if self._is_postgres:
+            sql += " RETURNING id"
         with self._db() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO attendance_queue
-                    (student_id, student_name, date_str, session_id,
-                     status, attempts, created_at, updated_at, next_retry_at)
-                VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?, ?)
-                """,
-                (student_id, student_name, date_str, sid, now, now, now),
-            )
-            rec_id = cursor.lastrowid
+            cur = conn.execute(sql, (student_id, student_name, date_str, sid, now, now, now))
+            if self._is_postgres:
+                rec_id = cur.fetchone()["id"]
+            else:
+                rec_id = cur.lastrowid
 
         with self._lock:
             self._mark_in_memory(student_id, date_str, session_id)
@@ -232,39 +331,14 @@ class AttendanceQueue:
         logger.info(f"Queued attendance for {student_name} (queue #{rec_id})")
         return rec_id
 
-    # ── Embedding cache ───────────────────────────────────────────────────────
-
-    def get_local_embedding(self, student_id: str) -> Optional[str]:
-        """Return cached JSON embedding for student_id, or None if not found."""
-        with self._db() as conn:
-            row = conn.execute(
-                "SELECT embedding FROM face_embeddings WHERE student_id=?",
-                (student_id,),
-            ).fetchone()
-        return row["embedding"] if row else None
-
-    def save_local_embedding(self, student_id: str, embedding_json: str) -> None:
-        """Upsert a JSON embedding for student_id."""
-        now = datetime.now().isoformat()
-        with self._db() as conn:
-            conn.execute(
-                """
-                INSERT INTO face_embeddings (student_id, embedding, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(student_id) DO UPDATE
-                    SET embedding=excluded.embedding, updated_at=excluded.updated_at
-                """,
-                (student_id, embedding_json, now),
-            )
-        logger.debug(f"Saved local embedding for student {student_id}")
-
     def get_status_summary(self) -> dict:
-        """Return queue health for /admin/sync-status."""
         since = (datetime.now() - timedelta(days=1)).strftime("%d-%b-%Y")
         with self._db() as conn:
             rows = conn.execute(
-                "SELECT status, COUNT(*) as cnt FROM attendance_queue "
-                "WHERE date_str >= ? GROUP BY status",
+                self._q(
+                    "SELECT status, COUNT(*) as cnt FROM attendance_queue "
+                    "WHERE date_str >= ? GROUP BY status"
+                ),
                 (since,),
             ).fetchall()
             counts = {row["status"]: row["cnt"] for row in rows}
@@ -276,40 +350,105 @@ class AttendanceQueue:
             ).fetchall()
 
             pending_old = conn.execute(
-                "SELECT id, student_name, date_str, attempts, created_at "
-                "FROM attendance_queue WHERE status='PENDING' "
-                "AND created_at < ? ORDER BY created_at ASC LIMIT 20",
+                self._q(
+                    "SELECT id, student_name, date_str, attempts, created_at "
+                    "FROM attendance_queue WHERE status='PENDING' "
+                    "AND created_at < ? ORDER BY created_at ASC LIMIT 20"
+                ),
                 ((datetime.now() - timedelta(minutes=5)).isoformat(),),
             ).fetchall()
 
         return {
-            "pending":         counts.get("PENDING", 0),
-            "posted":          counts.get("POSTED",  0),
-            "failed":          counts.get("FAILED",  0),
-            "failed_records":  [dict(r) for r in failed],
-            "stuck_pending":   [dict(r) for r in pending_old],
+            "pending":        counts.get("PENDING", 0),
+            "posted":         counts.get("POSTED",  0),
+            "failed":         counts.get("FAILED",  0),
+            "failed_records": [dict(r) for r in failed],
+            "stuck_pending":  [dict(r) for r in pending_old],
         }
 
     def retry_failed(self) -> int:
-        """Reset all FAILED records to PENDING. Returns count reset."""
         now = datetime.now().isoformat()
         with self._db() as conn:
-            cursor = conn.execute(
-                "UPDATE attendance_queue "
-                "SET status='PENDING', attempts=0, last_error=NULL, "
-                "    next_retry_at=?, updated_at=? "
-                "WHERE status='FAILED'",
+            cur = conn.execute(
+                self._q(
+                    "UPDATE attendance_queue "
+                    "SET status='PENDING', attempts=0, last_error=NULL, "
+                    "    next_retry_at=?, updated_at=? "
+                    "WHERE status='FAILED'"
+                ),
                 (now, now),
             )
-            count = cursor.rowcount
+            count = cur.rowcount
         logger.info(f"Reset {count} FAILED records to PENDING.")
         return count
 
+    # ── Embedding cache ───────────────────────────────────────────────────────
+
+    def get_local_embeddings(self, student_id: str) -> list:
+        """Return all cached embeddings for a student [{source, embedding, det_score}]."""
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q(
+                    "SELECT source, embedding, det_score FROM face_embeddings "
+                    "WHERE student_id=? ORDER BY source"
+                ),
+                (student_id,),
+            ).fetchall()
+        return [{"source": r["source"], "embedding": r["embedding"], "det_score": r["det_score"]} for r in rows]
+
+    def save_local_embedding(
+        self,
+        student_id: str,
+        embedding_json: str,
+        source: str = "enrollment",
+        det_score: Optional[float] = None,
+    ) -> None:
+        """Upsert a JSON embedding for (student_id, source)."""
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            conn.execute(
+                self._q("""
+                    INSERT INTO face_embeddings (student_id, source, embedding, det_score, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(student_id, source) DO UPDATE
+                        SET embedding=excluded.embedding,
+                            det_score=excluded.det_score,
+                            updated_at=excluded.updated_at
+                """),
+                (student_id, source, embedding_json, det_score, now),
+            )
+
+    def add_verified_embedding(self, student_id: str, embedding_json: str) -> None:
+        """
+        Persist a live-capture embedding for future angle-variant matching.
+        Rotates through verified_1 → verified_2 → verified_3, then wraps back to verified_1.
+        Called after every successful attendance mark so the system self-improves.
+        """
+        with self._db() as conn:
+            rows = conn.execute(
+                self._q(
+                    "SELECT source FROM face_embeddings "
+                    "WHERE student_id=? AND source LIKE 'verified_%'"
+                ),
+                (student_id,),
+            ).fetchall()
+        existing = {r["source"] for r in rows}
+
+        # Fill empty slot first
+        for i in range(1, 4):
+            slot = f"verified_{i}"
+            if slot not in existing:
+                self.save_local_embedding(student_id, embedding_json, source=slot)
+                logger.debug(f"Saved live capture as {slot} for student {student_id}")
+                return
+
+        # All 3 full — rotate: overwrite verified_1 (oldest, by convention)
+        self.save_local_embedding(student_id, embedding_json, source="verified_1")
+        logger.debug(f"Rotated verified_1 embedding for student {student_id}")
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _mark_in_memory(
-        self, student_id: str, date_str: str, session_id: Optional[str]
-    ):
+    def _mark_in_memory(self, student_id: str, date_str: str, session_id: Optional[str]):
         """Must be called while holding self._lock."""
         if date_str not in self._global_marked:
             self._global_marked[date_str] = set()
@@ -323,7 +462,6 @@ class AttendanceQueue:
     # ── Background drain loop ─────────────────────────────────────────────────
 
     def _drain_loop(self):
-        """Daemon thread: continuously drains PENDING → Zoho."""
         while True:
             try:
                 self._drain()
@@ -333,41 +471,41 @@ class AttendanceQueue:
 
     def _drain(self):
         now_iso = datetime.now().isoformat()
-
-        # Reset records stuck in PROCESSING (happens if a worker crashed mid-flight)
         stale_iso = (datetime.now() - timedelta(minutes=5)).isoformat()
+
         with self._db() as conn:
             conn.execute(
-                "UPDATE attendance_queue "
-                "SET status='PENDING', next_retry_at=?, updated_at=? "
-                "WHERE status='PROCESSING' AND updated_at < ?",
+                self._q(
+                    "UPDATE attendance_queue "
+                    "SET status='PENDING', next_retry_at=?, updated_at=? "
+                    "WHERE status='PROCESSING' AND updated_at < ?"
+                ),
                 (now_iso, now_iso, stale_iso),
             )
 
-        # Find candidate PENDING rows
         with self._db() as conn:
             rows = conn.execute(
-                "SELECT id, student_id, student_name, date_str, session_id, attempts "
-                "FROM attendance_queue "
-                "WHERE status='PENDING' AND next_retry_at <= ? "
-                "ORDER BY created_at ASC LIMIT 10",
+                self._q(
+                    "SELECT id, student_id, student_name, date_str, session_id, attempts "
+                    "FROM attendance_queue "
+                    "WHERE status='PENDING' AND next_retry_at <= ? "
+                    "ORDER BY created_at ASC LIMIT 10"
+                ),
                 (now_iso,),
             ).fetchall()
 
         for row in rows:
             rec_id = row["id"]
-
-            # Atomically claim this record by flipping PENDING → PROCESSING.
-            # SQLite serialises the UPDATE, so only one of the 4 Gunicorn workers
-            # will see rowcount=1; the others get 0 and skip it — no duplicates.
             with self._db() as conn:
-                cursor = conn.execute(
-                    "UPDATE attendance_queue SET status='PROCESSING', updated_at=? "
-                    "WHERE id=? AND status='PENDING'",
+                cur = conn.execute(
+                    self._q(
+                        "UPDATE attendance_queue SET status='PROCESSING', updated_at=? "
+                        "WHERE id=? AND status='PENDING'"
+                    ),
                     (now_iso, rec_id),
                 )
-            if cursor.rowcount == 0:
-                continue   # another worker already claimed this record
+            if cur.rowcount == 0:
+                continue
 
             name       = row["student_name"]
             student_id = row["student_id"]
@@ -384,9 +522,7 @@ class AttendanceQueue:
                     self._set_posted(rec_id)
                     logger.info(f"Queue: synced {name} → Zoho (#{rec_id})")
                 else:
-                    self._handle_failure(
-                        rec_id, attempts, result.get("error", "Zoho returned failure")
-                    )
+                    self._handle_failure(rec_id, attempts, result.get("error", "Zoho returned failure"))
             except Exception as e:
                 self._handle_failure(rec_id, attempts, str(e))
 
@@ -394,8 +530,10 @@ class AttendanceQueue:
         now = datetime.now().isoformat()
         with self._db() as conn:
             conn.execute(
-                "UPDATE attendance_queue SET status='POSTED', updated_at=? "
-                "WHERE id=? AND status='PROCESSING'",
+                self._q(
+                    "UPDATE attendance_queue SET status='POSTED', updated_at=? "
+                    "WHERE id=? AND status='PROCESSING'"
+                ),
                 (now, rec_id),
             )
 
@@ -405,24 +543,25 @@ class AttendanceQueue:
         if new_attempts >= MAX_ATTEMPTS:
             with self._db() as conn:
                 conn.execute(
-                    "UPDATE attendance_queue "
-                    "SET status='FAILED', attempts=?, last_error=?, updated_at=? "
-                    "WHERE id=? AND status='PROCESSING'",
+                    self._q(
+                        "UPDATE attendance_queue "
+                        "SET status='FAILED', attempts=?, last_error=?, updated_at=? "
+                        "WHERE id=? AND status='PROCESSING'"
+                    ),
                     (new_attempts, error[:500], now, rec_id),
                 )
-            logger.error(
-                f"Queue: #{rec_id} permanently FAILED after {MAX_ATTEMPTS} attempts: {error[:150]}"
-            )
+            logger.error(f"Queue: #{rec_id} permanently FAILED after {MAX_ATTEMPTS} attempts: {error[:150]}")
         else:
-            # Exponential backoff: 5s → 15s → 45s → 135s
             delay = 5 * (3 ** attempts)
             next_retry = (datetime.now() + timedelta(seconds=delay)).isoformat()
             with self._db() as conn:
                 conn.execute(
-                    "UPDATE attendance_queue "
-                    "SET status='PENDING', attempts=?, last_error=?, "
-                    "    updated_at=?, next_retry_at=? "
-                    "WHERE id=? AND status='PROCESSING'",
+                    self._q(
+                        "UPDATE attendance_queue "
+                        "SET status='PENDING', attempts=?, last_error=?, "
+                        "    updated_at=?, next_retry_at=? "
+                        "WHERE id=? AND status='PROCESSING'"
+                    ),
                     (new_attempts, error[:500], now, next_retry, rec_id),
                 )
             logger.warning(

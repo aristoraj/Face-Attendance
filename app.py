@@ -33,7 +33,7 @@ from config import (
 )
 from face_utils import (
     FaceCache, decode_base64_image,
-    encode_face_with_bbox, find_best_match,
+    encode_face_with_bbox, find_best_match, embedding_to_json,
 )
 from liveness_utils import check_liveness
 from zoho_api import ZohoCreatorAPI
@@ -211,7 +211,7 @@ def verify():
             return jsonify({"success": False, "error": f"Image decode failed: {e}"}), 400
 
         # ── 2. Detect face + embedding + bounding box ─────────────────────────
-        submitted_encoding, bbox, err = encode_face_with_bbox(image_array)
+        submitted_encoding, bbox, _det_score, err = encode_face_with_bbox(image_array)
         if err:
             return jsonify({"success": False, "error": err}), 422
         if submitted_encoding is None:
@@ -281,6 +281,14 @@ def verify():
             f"Attendance queued for {best_match['name']} "
             f"(queue #{queue_id}, liveness={liveness_score:.2f})"
         )
+
+        # Save this verified live capture as an angle-variant embedding (self-learning)
+        _emb_json = embedding_to_json(submitted_encoding)
+        threading.Thread(
+            target=att_queue.add_verified_embedding,
+            args=(best_match["id"], _emb_json),
+            daemon=True,
+        ).start()
 
         return jsonify({
             "success":           True,

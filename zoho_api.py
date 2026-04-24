@@ -214,10 +214,9 @@ class ZohoCreatorAPI:
         return students
 
     def _process_record(self, record: dict) -> dict | None:
-        """Parse a raw Zoho Creator record into a student dict with face encoding."""
+        """Parse a raw Zoho Creator record into a student dict with face encodings."""
         student_id = record.get("ID") or record.get("id")
 
-        # Name component field returns a dict
         name_raw = record.get(FIELD_STUDENT_NAME)
         if isinstance(name_raw, dict):
             name = (
@@ -230,44 +229,51 @@ class ZohoCreatorAPI:
 
         student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
 
-        # ── 1a. Local SQLite embedding cache (fastest — no network) ──────────────
+        # ── 1a. Local SQLite/PostgreSQL embedding cache (fastest — no network) ──
         if self._embedding_cache:
-            cached_json = self._embedding_cache.get_local_embedding(student_id)
-            if cached_json:
-                try:
-                    embedding = json_to_embedding(cached_json)
-                    logger.info(f"Local cache hit for '{name}' ({student_number}) — skipping photo download")
+            cached = self._embedding_cache.get_local_embeddings(student_id)
+            if cached:
+                encodings = []
+                for item in cached:
+                    try:
+                        encodings.append(json_to_embedding(item["embedding"]))
+                    except Exception:
+                        pass
+                if encodings:
+                    logger.info(
+                        f"Local cache hit for '{name}' ({student_number}) "
+                        f"— {len(encodings)} embedding(s), skipping photo download"
+                    )
                     return {
                         "id":             student_id,
                         "student_number": student_number,
                         "name":           name,
-                        "encoding":       embedding,
+                        "encodings":      encodings,
                     }
-                except Exception as e:
-                    logger.warning(f"Bad local cache embedding for '{name}': {e} — falling back")
 
-        # ── 1b. Try pre-computed embedding from Zoho field (skip photo download) ─
+        # ── 1b. Try pre-computed embedding from Zoho field ────────────────────
         embedding_raw = record.get(FIELD_STUDENT_EMBEDDING, "")
         if embedding_raw and isinstance(embedding_raw, str) and embedding_raw.strip().startswith("["):
             try:
                 embedding = json_to_embedding(embedding_raw.strip())
                 logger.info(f"Zoho-stored embedding loaded for '{name}' ({student_number})")
-                # Backfill local cache so next reload is instant
                 if self._embedding_cache:
                     try:
-                        self._embedding_cache.save_local_embedding(student_id, embedding_raw.strip())
+                        self._embedding_cache.save_local_embedding(
+                            student_id, embedding_raw.strip(), source="enrollment"
+                        )
                     except Exception:
                         pass
                 return {
                     "id":             student_id,
                     "student_number": student_number,
                     "name":           name,
-                    "encoding":       embedding,
+                    "encodings":      [embedding],
                 }
             except Exception as e:
                 logger.warning(f"Bad stored embedding for '{name}': {e} — falling back to photo")
 
-        # ── 2. Fallback: download photo and encode ─────────────────────────────
+        # ── 2. Fallback: download photo and encode ────────────────────────────
         photo = record.get(FIELD_STUDENT_PHOTO)
         if not photo:
             logger.warning(f"Skipping '{name}' — no photo and no stored embedding.")
@@ -286,26 +292,35 @@ class ZohoCreatorAPI:
             photo_url = f"https://creator.zoho.{ZOHO_DATA_CENTER}{photo_url}"
 
         try:
-            encoding = self._download_and_encode(photo_url)
+            encoding, det_score, err = self._download_and_encode(photo_url)
         except Exception as e:
             logger.warning(f"Skipping '{name}': {e}")
             return None
 
-        if encoding is None:
-            logger.warning(f"No face in photo for '{name}'.")
+        if err or encoding is None:
+            logger.warning(f"No face in photo for '{name}': {err}")
             return None
 
-        logger.info(f"Encoded face from photo for '{name}' ({student_number})")
+        # Quality warning: low det_score means the enrollment photo is poor
+        if det_score is not None and det_score < 0.60:
+            logger.warning(
+                f"Low quality enrollment photo for '{name}' "
+                f"(det_score={det_score:.2f}) — consider replacing in Zoho Creator"
+            )
 
-        # ── 3. Save embedding to local SQLite cache (instant next reload) ────────
+        logger.info(f"Encoded face from photo for '{name}' ({student_number}, det_score={det_score:.2f})")
         embedding_json = embedding_to_json(encoding)
+
+        # ── 3. Save to local cache (instant on next reload) ───────────────────
         if self._embedding_cache:
             try:
-                self._embedding_cache.save_local_embedding(student_id, embedding_json)
+                self._embedding_cache.save_local_embedding(
+                    student_id, embedding_json, source="enrollment", det_score=det_score
+                )
             except Exception as e:
                 logger.warning(f"Could not save local embedding for '{name}': {e} (non-fatal)")
 
-        # ── 4. Save embedding back to Zoho Creator as backup ─────────────────────
+        # ── 4. Save to Zoho Creator as backup ────────────────────────────────
         try:
             self.save_embedding(student_id, encoding)
         except Exception as e:
@@ -315,16 +330,14 @@ class ZohoCreatorAPI:
             "id":             student_id,
             "student_number": student_number,
             "name":           name,
-            "encoding":       encoding,
+            "encodings":      [encoding],
         }
 
     def _download_and_encode(self, url: str):
         resp = requests.get(url, headers=self._headers(), timeout=20)
         resp.raise_for_status()
-        encoding, err = encode_face_from_bytes(resp.content)
-        if err:
-            raise ValueError(err)
-        return encoding
+        encoding, det_score, err = encode_face_from_bytes(resp.content)
+        return encoding, det_score, err
 
     def save_embedding(self, student_system_id: str, embedding) -> None:
         """

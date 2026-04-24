@@ -670,7 +670,18 @@ async function captureAndVerify() {
       body:    JSON.stringify(body),
     });
 
-    const data = await resp.json();
+    let data;
+    try {
+      data = await resp.json();
+    } catch (_) {
+      spinnerEl.classList.remove('show');
+      const msg = resp.status === 502 || resp.status === 503
+        ? 'Server is temporarily unavailable. Please try again in a moment.'
+        : `Server error (${resp.status}). Please try again.`;
+      showError(msg);
+      resetForRetry();
+      return;
+    }
     spinnerEl.classList.remove('show');
 
     if (!resp.ok) {

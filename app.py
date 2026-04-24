@@ -53,6 +53,7 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 zoho = ZohoCreatorAPI()
 att_queue = AttendanceQueue(zoho)
+zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
 
 # ─── Per-batch face cache ──────────────────────────────────────────────────────
 _batch_caches: dict[str, FaceCache] = {}

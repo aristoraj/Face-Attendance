@@ -675,7 +675,7 @@ async function captureAndVerify() {
 
     if (!resp.ok) {
       showError(data.error || 'Verification failed.');
-      onFailedAttempt();
+      resetForRetry();
       return;
     }
 

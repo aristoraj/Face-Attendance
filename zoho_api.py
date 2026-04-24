@@ -39,6 +39,7 @@ class ZohoCreatorAPI:
     def __init__(self):
         self._access_token = None
         self._token_expiry = 0.0   # Unix timestamp; 0 means "not yet fetched"
+        self._embedding_cache = None  # set to att_queue after init (see app.py)
         self._base_url = self.BASE_URL_TEMPLATE.format(
             dc=ZOHO_DATA_CENTER,
             owner=ZOHO_ACCOUNT_OWNER,
@@ -229,12 +230,34 @@ class ZohoCreatorAPI:
 
         student_number = str(record.get(FIELD_STUDENT_NUMBER, "")).strip()
 
-        # ── 1. Try pre-computed embedding first (skip photo download) ──────────
+        # ── 1a. Local SQLite embedding cache (fastest — no network) ──────────────
+        if self._embedding_cache:
+            cached_json = self._embedding_cache.get_local_embedding(student_id)
+            if cached_json:
+                try:
+                    embedding = json_to_embedding(cached_json)
+                    logger.info(f"Local cache hit for '{name}' ({student_number}) — skipping photo download")
+                    return {
+                        "id":             student_id,
+                        "student_number": student_number,
+                        "name":           name,
+                        "encoding":       embedding,
+                    }
+                except Exception as e:
+                    logger.warning(f"Bad local cache embedding for '{name}': {e} — falling back")
+
+        # ── 1b. Try pre-computed embedding from Zoho field (skip photo download) ─
         embedding_raw = record.get(FIELD_STUDENT_EMBEDDING, "")
         if embedding_raw and isinstance(embedding_raw, str) and embedding_raw.strip().startswith("["):
             try:
                 embedding = json_to_embedding(embedding_raw.strip())
-                logger.info(f"Pre-computed embedding loaded for '{name}' ({student_number})")
+                logger.info(f"Zoho-stored embedding loaded for '{name}' ({student_number})")
+                # Backfill local cache so next reload is instant
+                if self._embedding_cache:
+                    try:
+                        self._embedding_cache.save_local_embedding(student_id, embedding_raw.strip())
+                    except Exception:
+                        pass
                 return {
                     "id":             student_id,
                     "student_number": student_number,
@@ -274,11 +297,19 @@ class ZohoCreatorAPI:
 
         logger.info(f"Encoded face from photo for '{name}' ({student_number})")
 
-        # ── 3. Save embedding back to Zoho Creator for next cache load ─────────
+        # ── 3. Save embedding to local SQLite cache (instant next reload) ────────
+        embedding_json = embedding_to_json(encoding)
+        if self._embedding_cache:
+            try:
+                self._embedding_cache.save_local_embedding(student_id, embedding_json)
+            except Exception as e:
+                logger.warning(f"Could not save local embedding for '{name}': {e} (non-fatal)")
+
+        # ── 4. Save embedding back to Zoho Creator as backup ─────────────────────
         try:
             self.save_embedding(student_id, encoding)
         except Exception as e:
-            logger.warning(f"Could not save embedding for '{name}': {e} (non-fatal)")
+            logger.warning(f"Could not save Zoho embedding for '{name}': {e} (non-fatal)")
 
         return {
             "id":             student_id,

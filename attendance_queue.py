@@ -131,6 +131,13 @@ class AttendanceQueue:
                 "CREATE INDEX IF NOT EXISTS idx_student_date "
                 "ON attendance_queue(student_id, date_str, session_id)"
             )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS face_embeddings (
+                    student_id   TEXT PRIMARY KEY,
+                    embedding    TEXT NOT NULL,
+                    updated_at   TEXT NOT NULL
+                )
+            """)
         logger.info(f"Attendance queue DB at: {DB_PATH}")
 
     def _rebuild_dedup_from_db(self):
@@ -224,6 +231,32 @@ class AttendanceQueue:
 
         logger.info(f"Queued attendance for {student_name} (queue #{rec_id})")
         return rec_id
+
+    # ── Embedding cache ───────────────────────────────────────────────────────
+
+    def get_local_embedding(self, student_id: str) -> Optional[str]:
+        """Return cached JSON embedding for student_id, or None if not found."""
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT embedding FROM face_embeddings WHERE student_id=?",
+                (student_id,),
+            ).fetchone()
+        return row["embedding"] if row else None
+
+    def save_local_embedding(self, student_id: str, embedding_json: str) -> None:
+        """Upsert a JSON embedding for student_id."""
+        now = datetime.now().isoformat()
+        with self._db() as conn:
+            conn.execute(
+                """
+                INSERT INTO face_embeddings (student_id, embedding, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(student_id) DO UPDATE
+                    SET embedding=excluded.embedding, updated_at=excluded.updated_at
+                """,
+                (student_id, embedding_json, now),
+            )
+        logger.debug(f"Saved local embedding for student {student_id}")
 
     def get_status_summary(self) -> dict:
         """Return queue health for /admin/sync-status."""

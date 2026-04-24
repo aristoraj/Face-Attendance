@@ -219,3 +219,13 @@ def json_to_embedding(json_str: str) -> np.ndarray:
     if norm > 0:
         arr = arr / norm   # re-normalise in case of float rounding
     return arr
+
+
+# Eagerly load the model at import time so Gunicorn --preload bakes it into the
+# master process before forking workers. Workers inherit via OS copy-on-write,
+# meaning the model is loaded once (~350 MB) rather than N times per worker.
+# Without this, _get_face_app() is lazy and --preload has no effect.
+try:
+    _get_face_app()
+except Exception as _e:
+    logger.warning(f"buffalo_l eager pre-load failed at import: {_e} — will retry on first request")

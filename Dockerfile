@@ -65,9 +65,8 @@ USER appuser
 
 EXPOSE 5000
 
-# --preload: master process loads buffalo_l (~300 MB) once before forking.
-# Workers inherit the model via OS copy-on-write — total RAM stays ~450 MB
-# instead of 4 × 300 MB = 1.2 GB if each worker loaded independently.
-# 4 workers × 1.5s per request = ~160 req/min, comfortably above the
-# 1200-student / 60-min peak rate of ~20-80 req/min.
-CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers 4 --timeout 120 --preload --log-level info"]
+# --preload: master loads buffalo_l once before forking; workers inherit via CoW.
+# Workers=2 on free/512MB tier (upgrade to Render Standard 2GB for workers=4).
+# Memory budget: 350MB model (shared) + 2×80MB worker heaps + ~80MB OS/Flask ≈ 590MB.
+# On Render Standard (2GB): bump GUNICORN_WORKERS env var to 4.
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers ${GUNICORN_WORKERS:-2} --timeout 120 --preload --log-level info"]

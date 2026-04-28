@@ -163,7 +163,7 @@ class AttendanceQueue:
     def _table_exists(self, conn, table_name: str) -> bool:
         if self._is_postgres:
             row = conn.execute(
-                "SELECT 1 FROM information_schema.tables WHERE table_name=?",
+                self._q("SELECT 1 FROM information_schema.tables WHERE table_name=?"),
                 (table_name,)
             ).fetchone()
         else:
@@ -175,8 +175,14 @@ class AttendanceQueue:
 
     def _migrate_embeddings_schema(self, conn):
         """Migrate face_embeddings v1 (single PRIMARY KEY) → v2 (multi-source)."""
+        # Use a savepoint on PostgreSQL so a migration error doesn't abort the
+        # outer _init_db() transaction (InFailedSqlTransaction cascade).
+        if self._is_postgres:
+            conn.execute("SAVEPOINT migrate_embeddings")
         try:
             if not self._table_exists(conn, "face_embeddings"):
+                if self._is_postgres:
+                    conn.execute("RELEASE SAVEPOINT migrate_embeddings")
                 return   # fresh install — no migration needed
 
             if self._is_postgres:
@@ -190,6 +196,8 @@ class AttendanceQueue:
                 has_source = any(r["name"] == "source" for r in info)
 
             if has_source:
+                if self._is_postgres:
+                    conn.execute("RELEASE SAVEPOINT migrate_embeddings")
                 return   # already v2 — nothing to do
 
             logger.info("Migrating face_embeddings to multi-source schema...")
@@ -200,8 +208,16 @@ class AttendanceQueue:
                 "SELECT student_id, 'enrollment', embedding, updated_at FROM face_embeddings_v1"
             ))
             conn.execute("DROP TABLE face_embeddings_v1")
+            if self._is_postgres:
+                conn.execute("RELEASE SAVEPOINT migrate_embeddings")
             logger.info("face_embeddings migration complete.")
         except Exception as e:
+            if self._is_postgres:
+                try:
+                    conn.execute("ROLLBACK TO SAVEPOINT migrate_embeddings")
+                    conn.execute("RELEASE SAVEPOINT migrate_embeddings")
+                except Exception:
+                    pass
             logger.warning(f"face_embeddings migration skipped: {e}")
 
     def _create_embeddings_table(self, conn):

@@ -301,21 +301,21 @@ class AttendanceQueue:
             if sid:
                 count = conn.execute(
                     self._q(
-                        "SELECT COUNT(*) FROM attendance_queue "
+                        "SELECT COUNT(*) AS cnt FROM attendance_queue "
                         "WHERE student_id=? AND date_str=? AND session_id=? "
                         "AND status IN ('PENDING','PROCESSING','POSTED')"
                     ),
                     (student_id, date_str, sid),
-                ).fetchone()[0]
+                ).fetchone()["cnt"]
             else:
                 count = conn.execute(
                     self._q(
-                        "SELECT COUNT(*) FROM attendance_queue "
+                        "SELECT COUNT(*) AS cnt FROM attendance_queue "
                         "WHERE student_id=? AND date_str=? "
                         "AND status IN ('PENDING','PROCESSING','POSTED')"
                     ),
                     (student_id, date_str),
-                ).fetchone()[0]
+                ).fetchone()["cnt"]
 
         if count > 0:
             with self._lock:

@@ -10,6 +10,9 @@
   <!-- Bootstrap Icons -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
 
+  <!-- Zoho Creator Widget SDK (provides ZOHO.CREATOR.init for logged-in user) -->
+  <script src="https://js.zohostatic.com/creator/widgets/version/2/widgets.js"></script>
+
   <!-- MediaPipe Face Mesh -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js" crossorigin="anonymous"></script>
@@ -434,6 +437,28 @@ const BATCH_ID   = urlParams.get('batch_id')   || '';   // Zoho system record ID
 const SESSION_ID = urlParams.get('session_id') || '';   // Zoho system record ID of Session
 const BATCH_NAME = urlParams.get('batch_name') || '';   // Human-readable batch name (display only)
 
+// ── Logged-in user (from Zoho Creator portal) ─────────────────────────────────
+let USER_EMAIL = '';
+
+(function initZohoUser() {
+  if (typeof ZOHO === 'undefined' || !ZOHO.CREATOR) return;
+  ZOHO.CREATOR.init()
+    .then(function (data) {
+      const user = data && data.loggedInUser;
+      if (typeof user === 'string' && user) {
+        USER_EMAIL = user;
+      } else if (user && (user.email || user.EmailID || user.Email)) {
+        USER_EMAIL = user.email || user.EmailID || user.Email;
+      }
+      if (USER_EMAIL) {
+        console.log('[FaceVerify] Logged in as:', USER_EMAIL);
+      }
+    })
+    .catch(function (e) {
+      console.warn('[FaceVerify] ZOHO.CREATOR.init failed:', e);
+    });
+})();
+
 // ── Config ────────────────────────────────────────────────────────────────────
 const API_BASE         = '';
 const BLINKS_REQUIRED  = 2;
@@ -663,6 +688,7 @@ async function captureAndVerify() {
     };
     if (BATCH_ID)   body.batch_id   = BATCH_ID;
     if (SESSION_ID) body.session_id = SESSION_ID;
+    if (USER_EMAIL) body.user_email = USER_EMAIL;
 
     const resp = await fetch(`${API_BASE}/api/verify`, {
       method:  'POST',
@@ -848,9 +874,11 @@ async function refreshCache() {
   btn.disabled = true;
   btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Refreshing...';
   try {
-    const url = BATCH_ID
-      ? `${API_BASE}/api/cache/refresh?batch_id=${encodeURIComponent(BATCH_ID)}`
-      : `${API_BASE}/api/cache/refresh`;
+    const params = new URLSearchParams();
+    if (BATCH_ID)   params.set('batch_id',   BATCH_ID);
+    if (USER_EMAIL) params.set('user_email', USER_EMAIL);
+    const qs  = params.toString();
+    const url = `${API_BASE}/api/cache/refresh${qs ? '?' + qs : ''}`;
     const resp = await fetch(url, { method: 'POST' });
     const data = await resp.json();
     if (data.success) {

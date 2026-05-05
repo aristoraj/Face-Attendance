@@ -50,6 +50,16 @@ FIELD_ATT_SESSION = os.environ.get("FIELD_ATT_SESSION", "Session")
 FACE_MATCH_TOLERANCE = float(os.environ.get("FACE_MATCH_TOLERANCE", "0.40"))
 CACHE_TTL_SECONDS    = int(os.environ.get("CACHE_TTL_SECONDS", "3600"))
 
+# ─── User Management (for center-scoped student lookup) ───────────────────────
+# Report link name of the User Management form/report in Zoho Creator
+ZOHO_USER_MGMT_REPORT = os.environ.get("ZOHO_USER_MGMT_REPORT", "All_Users")
+# Field link name of the email field in the user management form
+FIELD_USER_EMAIL   = os.environ.get("FIELD_USER_EMAIL",   "Email")
+# Field link name of the multiselect Centers lookup in user management
+FIELD_USER_CENTERS = os.environ.get("FIELD_USER_CENTERS", "Centers")
+# Field link name of the Center lookup in the student database
+FIELD_STUDENT_CENTER = os.environ.get("FIELD_STUDENT_CENTER", "Center")
+
 # ─── App Settings ─────────────────────────────────────────────────────────────
 PORT       = int(os.environ.get("PORT", 5000))
 DEBUG      = os.environ.get("DEBUG", "false").lower() == "true"

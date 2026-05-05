@@ -55,30 +55,62 @@ zoho = ZohoCreatorAPI()
 att_queue = AttendanceQueue(zoho)
 zoho._embedding_cache = att_queue   # wire local SQLite embedding cache into zoho client
 
-# ─── Per-batch face cache ──────────────────────────────────────────────────────
+# ─── Per-scope face cache ──────────────────────────────────────────────────────
 _batch_caches: dict[str, FaceCache] = {}
 _batch_caches_lock = threading.Lock()
 
 
-def _get_cache(batch_id: str = None) -> FaceCache:
-    key = batch_id or "ALL"
+def _build_scope_key(batch_id: str = None, centers: list = None) -> str:
+    """Deterministic cache key from batch + centers."""
+    if centers:
+        center_part = "C:" + ",".join(sorted(str(c) for c in centers))
+        return f"{batch_id}|{center_part}" if batch_id else center_part
+    return batch_id or "ALL"
+
+
+def _get_cache(batch_id: str = None, centers: list = None) -> FaceCache:
+    key = _build_scope_key(batch_id, centers)
     with _batch_caches_lock:
         if key not in _batch_caches:
             _batch_caches[key] = FaceCache(ttl=CACHE_TTL_SECONDS)
         return _batch_caches[key]
 
 
-def get_students_cached(batch_id: str = None) -> list:
-    cache = _get_cache(batch_id)
+def get_students_cached(batch_id: str = None, centers: list = None) -> list:
+    cache = _get_cache(batch_id=batch_id, centers=centers)
     students = cache.get()
     if students is None:
-        scope = f"batch {batch_id}" if batch_id else "all students"
+        if centers:
+            scope = f"centers {centers}"
+        elif batch_id:
+            scope = f"batch {batch_id}"
+        else:
+            scope = "all students"
         logger.info(f"Cache miss — loading {scope} from Zoho Creator...")
-        students = zoho.get_students(batch_id=batch_id)
+        students = zoho.get_students(batch_id=batch_id, centers=centers)
         cache.set(students)
     else:
         logger.info(f"Cache hit — {cache.size} students (age: {cache.age_seconds:.0f}s)")
     return students
+
+
+# ─── User-centers cache (email → list[center_id/name], TTL 5 min) ─────────────
+_user_centers_cache: dict[str, tuple[list, float]] = {}
+_user_centers_lock  = threading.Lock()
+_USER_CENTERS_TTL   = 300   # seconds
+
+
+def get_user_centers_cached(email: str) -> list[str]:
+    with _user_centers_lock:
+        if email in _user_centers_cache:
+            centers, ts = _user_centers_cache[email]
+            if time.time() - ts < _USER_CENTERS_TTL:
+                logger.info(f"Centers cache hit for {email}: {centers}")
+                return centers
+    centers = zoho.get_user_centers(email)
+    with _user_centers_lock:
+        _user_centers_cache[email] = (centers, time.time())
+    return centers
 
 
 # ─── Always-on keepalive (Render free tier) ───────────────────────────────────
@@ -141,15 +173,27 @@ def cache_status():
 
 @app.route("/api/cache/refresh", methods=["POST"])
 def cache_refresh():
-    batch_id = request.args.get("batch_id") or (request.get_json(silent=True) or {}).get("batch_id")
+    body       = request.get_json(silent=True) or {}
+    batch_id   = request.args.get("batch_id")   or body.get("batch_id")   or None
+    user_email = request.args.get("user_email") or body.get("user_email") or None
+
+    centers = None
+    if user_email:
+        with _user_centers_lock:
+            _user_centers_cache.pop(user_email, None)   # bust the centres cache too
+        fetched = get_user_centers_cached(user_email)
+        if fetched:
+            centers = fetched
+
     try:
-        cache = _get_cache(batch_id)
+        cache = _get_cache(batch_id=batch_id, centers=centers)
         cache.invalidate()
-        students = get_students_cached(batch_id=batch_id)
+        students = get_students_cached(batch_id=batch_id, centers=centers)
+        scope = f"centres {centers}" if centers else (batch_id or "ALL")
         return jsonify({
             "success":         True,
             "students_loaded": len(students),
-            "batch_id":        batch_id or "ALL",
+            "scope":           scope,
             "message":         f"Cache refreshed. {len(students)} student encodings loaded.",
         })
     except Exception as e:
@@ -203,6 +247,16 @@ def verify():
 
         batch_id   = data.get("batch_id")   or None
         session_id = data.get("session_id") or None
+        user_email = data.get("user_email") or None
+
+        # Resolve the logged-in user's centres; fall back to full/batch load if unknown
+        centers = None
+        if user_email:
+            fetched = get_user_centers_cached(user_email)
+            if fetched:
+                centers = fetched
+            else:
+                logger.info(f"No centres found for {user_email} — loading all students in scope")
 
         # ── 1. Decode image ───────────────────────────────────────────────────
         try:
@@ -231,8 +285,8 @@ def verify():
                 "error":   "Live face not detected. Please ensure you are in front of the camera.",
             }), 400
 
-        # ── 4. Load student encodings (batch-scoped cache) ────────────────────
-        students = get_students_cached(batch_id=batch_id)
+        # ── 4. Load student encodings (centre-scoped or batch-scoped cache) ────
+        students = get_students_cached(batch_id=batch_id, centers=centers)
         if not students:
             return jsonify({
                 "success": False,

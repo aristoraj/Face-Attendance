@@ -21,8 +21,10 @@ from config import (
     ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN,
     ZOHO_ACCOUNT_OWNER, ZOHO_APP_NAME, ZOHO_DATA_CENTER,
     ZOHO_STUDENT_REPORT, ZOHO_ATTENDANCE_FORM, ZOHO_ATTENDANCE_REPORT,
+    ZOHO_USER_MGMT_REPORT, FIELD_USER_EMAIL, FIELD_USER_CENTERS,
     FIELD_STUDENT_ID, FIELD_STUDENT_NUMBER, FIELD_STUDENT_NAME,
     FIELD_STUDENT_PHOTO, FIELD_STUDENT_BATCH, FIELD_STUDENT_EMBEDDING,
+    FIELD_STUDENT_CENTER,
     FIELD_ATT_STUDENT, FIELD_ATT_DATE, FIELD_ATT_STATUS, FIELD_ATT_SESSION,
 )
 from face_utils import encode_face_from_bytes, embedding_to_json, json_to_embedding
@@ -96,23 +98,79 @@ class ZohoCreatorAPI:
             "Content-Type":  "application/json",
         }
 
+    # ─── User Management ──────────────────────────────────────────────────────
+
+    def get_user_centers(self, email: str) -> list[str]:
+        """
+        Look up a user by email in the User Management report and return the
+        set of center identifiers (IDs + display names) from their multiselect
+        Centers field.  Returns an empty list if the user is not found or has
+        no centres assigned.
+        """
+        url = f"{self._base_url}/report/{ZOHO_USER_MGMT_REPORT}"
+        criteria = f'({FIELD_USER_EMAIL}=="{email}")'
+        try:
+            resp = requests.get(
+                url,
+                headers=self._headers(),
+                params={"criteria": criteria, "limit": 1},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            records = resp.json().get("data", [])
+            if not records:
+                logger.warning(f"No user management record found for email: {email}")
+                return []
+
+            centers_field = records[0].get(FIELD_USER_CENTERS, [])
+            centers: list[str] = []
+
+            if isinstance(centers_field, list):
+                for item in centers_field:
+                    if isinstance(item, dict):
+                        if item.get("ID"):
+                            centers.append(str(item["ID"]))
+                        if item.get("display_value"):
+                            centers.append(str(item["display_value"]))
+                    elif isinstance(item, str) and item.strip():
+                        centers.append(item.strip())
+            elif isinstance(centers_field, str) and centers_field.strip():
+                centers.append(centers_field.strip())
+
+            logger.info(f"User {email} assigned to centers: {centers}")
+            return centers
+
+        except Exception as e:
+            logger.warning(f"Could not fetch centers for {email}: {e} — falling back to full load")
+            return []
+
     # ─── Students ──────────────────────────────────────────────────────────────
 
-    def get_students(self, batch_id: str = None) -> list[dict]:
+    def get_students(self, batch_id: str = None, centers: list = None) -> list[dict]:
         """
         Fetch student records from Zoho Creator, encode face embeddings, and
         return a list of student dicts.
 
         Args:
             batch_id: Zoho system record ID of the Batch to scope to (optional).
-                      If None, loads ALL students.
+            centers:  List of center IDs/names from the logged-in user's profile.
+                      When provided, only students whose Center field matches one
+                      of these values are returned — significantly reduces the
+                      comparison pool when the database has many centres.
         """
         url = f"{self._base_url}/report/{ZOHO_STUDENT_REPORT}"
         students = []
         page_start = 1
         page_size = 200
 
-        scope_label = f"batch {batch_id}" if batch_id else "all batches"
+        center_set = set(centers) if centers else set()
+
+        if centers:
+            scope_label = f"centers {centers}"
+        elif batch_id:
+            scope_label = f"batch {batch_id}"
+        else:
+            scope_label = "all students"
         logger.info(f"Fetching students from Zoho Creator ({scope_label})...")
 
         while True:
@@ -140,13 +198,28 @@ class ZohoCreatorAPI:
                     if record_batch_id != batch_id:
                         continue
 
+                # ── Center filter — scope to logged-in user's centres ─────────
+                if center_set:
+                    center_field = record.get(FIELD_STUDENT_CENTER)
+                    if isinstance(center_field, dict):
+                        record_center_id   = str(center_field.get("ID") or "")
+                        record_center_name = str(center_field.get("display_value") or "")
+                    elif isinstance(center_field, str):
+                        record_center_id   = ""
+                        record_center_name = center_field.strip()
+                    else:
+                        record_center_id = record_center_name = ""
+
+                    if record_center_id not in center_set and record_center_name not in center_set:
+                        continue
+
                 student = self._process_record(record)
                 if student:
                     students.append(student)
 
             logger.info(
-                f"Page {page_start}: {len(records)} records fetched, "
-                f"{len(students)} valid face encodings so far."
+                f"Page {page_start}: {len(records)} fetched, "
+                f"{len(students)} valid encodings so far ({scope_label})."
             )
 
             if len(records) < page_size:
